@@ -1,4 +1,4 @@
-
+# pyrefly: ignore[missing-import]
 import pygame
 
 pygame.init()

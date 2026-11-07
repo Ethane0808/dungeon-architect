@@ -1,0 +1,73 @@
+{
+  "_comment": "PROVISIONAL 測試數值（DECISIONS.md P08）。正式平衡調整前先以此為基準。",
+  "_spec_version": "v0.9",
+
+  "board": {
+    "size": 7,
+    "_comment": "[CONFIRMED] 7×7 格地圖（D13）"
+  },
+
+  "player": {
+    "hp_initial": 6,
+    "hp_max": 6,
+    "supplies_initial": 2,
+    "supplies_max": 5,
+    "_comment": "[PROVISIONAL] P08 暫定值"
+  },
+
+  "room_types": {
+    "_comment": "[PROVISIONAL] 五種基礎房型（P04），doors 順序 N/E/S/W",
+    "dead_end":    { "doors": [true, false, false, false], "weight": 2 },
+    "straight":    { "doors": [true, false, true, false],  "weight": 3 },
+    "corner":      { "doors": [true, true, false, false],  "weight": 3 },
+    "t_junction":  { "doors": [true, true, true, false],   "weight": 2 },
+    "cross":       { "doors": [true, true, true, true],    "weight": 1 }
+  },
+
+  "events": {
+    "_comment": "[PROVISIONAL] 三種普通事件類別（GAME_DESIGN §5）",
+    "categories": ["supply", "danger", "neutral"],
+    "weights_by_kind": {
+      "dead_end":   { "supply": 2, "danger": 2, "neutral": 6 },
+      "straight":   { "supply": 2, "danger": 2, "neutral": 6 },
+      "corner":     { "supply": 2, "danger": 2, "neutral": 6 },
+      "t_junction": { "supply": 3, "danger": 2, "neutral": 5 },
+      "cross":      { "supply": 3, "danger": 3, "neutral": 4 }
+    },
+    "outcomes": {
+      "supply": { "supplies_delta": 1 },
+      "danger": { "hp_delta": -1 },
+      "neutral": {}
+    }
+  },
+
+  "objectives": {
+    "_comment": "[PROVISIONAL] 祭壇與核心位置（P01/P02）；固定關卡布局",
+    "start":   [3, 0],
+    "altar_a": [0, 6],
+    "altar_b": [6, 6],
+    "core":    [3, 6],
+    "altar_a_milestone_supplies": 1,
+    "_comment2": "啟動第一座祭壇獲得 1 Supplies 里程碑（GAME_DESIGN §5）"
+  },
+
+  "items": {
+    "_comment": "[PROVISIONAL] 建議道具（P07）；具體實作見 GAME_DESIGN §建議測試道具",
+    "door_seal": {
+      "cost_supplies": 1,
+      "max_uses_per_game": 3
+    },
+    "emergency_chisel": {
+      "cost_supplies": 2,
+      "max_uses_per_game": 2
+    }
+  },
+
+  "draw": {
+    "_comment": "[PROVISIONAL] 三卡保底（GAME_DESIGN §4）",
+    "hand_size": 3,
+    "guarantee_one_legal": true,
+    "boost_second_legal_weight": 2.0
+  }
+}
+

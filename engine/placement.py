@@ -14,13 +14,13 @@ engine/placement.py
 from __future__ import annotations
 
 from collections import deque
-from typing import Collection, Optional
+from typing import Collection
 
 from engine.directions import (
-    DIRECTIONS, DIR_DELTA, OPPOSITE,
+    DIRECTIONS, OPPOSITE,
     is_in_bounds, neighbor_pos,
 )
-from engine.models import Board, BOARD_SIZE, Tile
+from engine.models import Board, BOARD_SIZE, Tile, validate_board
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43,16 +43,22 @@ def reachable_rooms(
     locked_specials：可以由外部額外傳入「不可抵達」的座標集合；
     目前主要由 Tile.can_traverse() 決定，此參數保留為未來擴充接口。
 
-    回傳值包含 start 本身（若有 Tile 且可通行）。
+    回傳值包含 start 本身（若有 Tile、可通行且未被額外鎖定）。
+    起點越界時回傳空集合；Board 非 7×7 時拋出 ValueError。
     """
+    validate_board(board)
     start_row, start_col = start
+    if not is_in_bounds(start_row, start_col, BOARD_SIZE):
+        return set()
+    locked_set = set(locked_specials)
+    if start in locked_set:
+        return set()
     start_tile = board[start_row][start_col]
     if start_tile is None or not start_tile.can_traverse():
         return set()
 
     visited: set[tuple[int, int]] = {start}
     queue: deque[tuple[int, int]] = deque([start])
-    locked_set = set(locked_specials)
 
     while queue:
         row, col = queue.popleft()
@@ -106,9 +112,13 @@ def frontier_cells(
     規則（GAME_DESIGN §3.4 / P09）：
     - 有門的可達房間 → 該方向相鄰格在地圖內 → 目標格是空白格 → 加入 frontier。
     - 不含地圖外座標。
+    - 忽略 reachable 中的越界座標；Board 非 7×7 時拋出 ValueError。
     """
+    validate_board(board)
     frontier: set[tuple[int, int]] = set()
     for (row, col) in reachable:
+        if not is_in_bounds(row, col, BOARD_SIZE):
+            continue
         tile = board[row][col]
         if tile is None:
             continue
@@ -149,7 +159,9 @@ def can_place(
     回傳：
       (True, "ok")               → 合法放置
       (False, <原因字串>)         → 非法放置，不消耗任何資源
+    Board 非 7×7 時拋出 ValueError。
     """
+    validate_board(board)
     row, col = pos
 
     # ── 規則 1：邊界 ──────────────────────────────────────────────────────────

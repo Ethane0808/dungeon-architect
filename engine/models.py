@@ -8,7 +8,7 @@ engine/models.py
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -56,6 +56,14 @@ Board = list[list[Optional[Tile]]]
 
 
 def make_empty_board(size: int = BOARD_SIZE) -> Board:
-    """建立全空 Board。"""
+    """建立固定 7×7 全空 Board；其他尺寸會拋出 ValueError。"""
+    if size != BOARD_SIZE:
+        raise ValueError(f"Board size must be {BOARD_SIZE}")
     return [[None] * size for _ in range(size)]
+
+
+def validate_board(board: Board) -> None:
+    """拒絕非 7×7 或各列長度不一致的 Board，避免規則查詢越界。"""
+    if len(board) != BOARD_SIZE or any(len(row) != BOARD_SIZE for row in board):
+        raise ValueError(f"Board must be {BOARD_SIZE}x{BOARD_SIZE}")
 

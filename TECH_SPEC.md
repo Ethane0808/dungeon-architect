@@ -42,6 +42,8 @@ assets/             # 圖像、字型、音效；版權要有來源
 ## 3. 座標、方向與房間表示
 
 - Board 是 `7×7`，`board[row][col]`，row/col 範圍 0–6。
+- Phase 1 API 契約：`make_empty_board(size=7)` 拒絕其他尺寸；`reachable_rooms`、`frontier_cells`、`can_place` 收到非 7×7（包含不等長列）的 Board 時拋出 `ValueError`。
+- `reachable_rooms` 的越界、空格或鎖定起點回傳空集合；`locked_specials` 同樣適用於起點。`frontier_cells` 忽略輸入集合中的越界座標；`can_place` 的越界目標回傳 `(False, "out_of_bounds")`。
 - 房間的 `doors` 使用 `tuple[bool,bool,bool,bool]`，順序 **N,E,S,W**。
 - 朝順時針 90° 旋轉：`new = (old[3],old[0],old[1],old[2])`。重複四次恢復原狀。
 - 房間包含：`kind`, `doors`, `event_category`, `event_outcome`, `event_resolved`, `is_special`, `special_state`。

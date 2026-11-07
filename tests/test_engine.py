@@ -20,9 +20,12 @@ Dungeon Architect — 第一階段核心引擎 pytest 測試。
 
 from __future__ import annotations
 
+from copy import deepcopy
+from itertools import product
+
 import pytest
 
-from engine.directions import rotate_doors, N, E, S, W, DIRECTIONS
+from engine.directions import rotate_doors, neighbor_pos, OPPOSITE, N, E, S, W, DIRECTIONS
 from engine.models import Tile, make_empty_board, BOARD_SIZE
 from engine.placement import can_place, reachable_rooms, frontier_cells
 
@@ -62,9 +65,11 @@ class TestRotation:
     def test_four_rotations_restore(self, name, n, e, s, w):
         """ROT-01：旋轉四次必須完全還原。"""
         original = (n, e, s, w)
-        result = rotate_doors(original, 4)
+        result = original
+        for _ in range(4):
+            result = rotate_doors(result)
         assert result == original, (
-            f"{name}: rotate_doors(d, 4) 應回到原始值，但得到 {result}"
+            f"{name}: 連續四次單步旋轉應回到原始值，但得到 {result}"
         )
 
     @pytest.mark.parametrize("name,n,e,s,w", BASE_DOORS)
@@ -550,4 +555,129 @@ class TestIntegration:
         assert (2, 4) in f, "十字房北方應在 frontier"
         assert (3, 5) in f, "十字房東方應在 frontier"
         assert (4, 4) in f, "十字房南方應在 frontier"
+
+
+INVALID_POSITIONS = [(-1, 3), (3, -1), (7, 3), (3, 7), (-8, 3), (3, 8)]
+
+
+@pytest.mark.parametrize("pos", INVALID_POSITIONS)
+def test_invalid_start_returns_empty(pos):
+    board = make_empty_board()
+    # Populate every cell so negative indices cannot silently pass as empty.
+    for row in range(BOARD_SIZE):
+        for col in range(BOARD_SIZE):
+            board[row][col] = make_tile(n=True, e=True, s=True, w=True)
+    assert reachable_rooms(board, pos) == set()
+
+
+@pytest.mark.parametrize("pos", INVALID_POSITIONS)
+def test_frontier_ignores_invalid_coordinates(pos):
+    board = make_empty_board()
+    place(board, 3, 3, make_tile(e=True))
+    place(board, 6, 3, make_tile(s=True))
+    place(board, 3, 6, make_tile(e=True))
+    assert frontier_cells(board, {(3, 3), pos}) == {(3, 4)}
+
+
+@pytest.mark.parametrize("blocked", [(3, 3), (3, 4)])
+def test_extra_lock_blocks_start_or_neighbor(blocked):
+    board = make_empty_board()
+    place(board, 3, 3, make_tile(e=True))
+    place(board, 3, 4, make_tile(w=True, e=True))
+    place(board, 3, 5, make_tile(w=True))
+    expected = set() if blocked == (3, 3) else {(3, 3)}
+    assert reachable_rooms(board, (3, 3), {blocked}) == expected
+
+
+@pytest.mark.parametrize("size", [0, -1, 3, 6, 8])
+def test_board_factory_rejects_other_sizes(size):
+    with pytest.raises(ValueError, match="7"):
+        make_empty_board(size)
+
+
+def test_board_has_seven_independent_rows():
+    board = make_empty_board(BOARD_SIZE)
+    assert len(board) == BOARD_SIZE
+    assert all(len(row) == BOARD_SIZE for row in board)
+    place(board, 0, 0, make_tile())
+    assert all(board[row][0] is None for row in range(1, BOARD_SIZE))
+
+
+@pytest.mark.parametrize("shape", ["empty", "short", "large", "ragged"])
+@pytest.mark.parametrize("query", ["reachable", "frontier", "placement"])
+def test_queries_reject_malformed_boards(shape, query):
+    board = make_empty_board()
+    if shape == "empty":
+        board = []
+    elif shape == "short":
+        board.pop()
+    elif shape == "large":
+        board.append([None] * BOARD_SIZE)
+    else:
+        board[6].pop()
+    with pytest.raises(ValueError, match="7"):
+        if query == "reachable":
+            reachable_rooms(board, (3, 3))
+        elif query == "frontier":
+            frontier_cells(board, {(3, 3)})
+        else:
+            can_place(make_tile(), (3, 4), board, {(3, 3)})
+
+
+@pytest.mark.parametrize("doors", list(product((False, True), repeat=4)))
+def test_rotations_follow_north_east_south_west(doors):
+    # Independent expected orientations, including symmetric room shapes.
+    for turns in range(8):
+        expected = tuple(doors[(direction - turns) % 4] for direction in DIRECTIONS)
+        assert rotate_doors(doors, turns) == expected
+
+
+@pytest.mark.parametrize("direction", DIRECTIONS)
+@pytest.mark.parametrize("new_door,neighbor_door", [(False, True), (True, False)])
+def test_mismatch_rejected_among_four_occupied_neighbors(direction, new_door, neighbor_door):
+    board = make_empty_board()
+    doors = [True] * 4
+    doors[direction] = new_door
+    reachable = set()
+    for side in DIRECTIONS:
+        pos = neighbor_pos(3, 3, side)
+        other_doors = [False] * 4
+        other_doors[OPPOSITE[side]] = neighbor_door if side == direction else True
+        place(board, *pos, Tile("room", tuple(other_doors)))
+        reachable.add(pos)
+    ok, reason = can_place(Tile("room", tuple(doors)), (3, 3), board, reachable)
+    assert not ok
+    assert "edge_mismatch" in reason
+
+
+@pytest.mark.parametrize("pos,outside,source", [
+    ((0, 0), N, E), ((0, 6), E, S),
+    ((6, 6), S, W), ((6, 0), W, N),
+])
+def test_corner_outward_door_rejected(pos, outside, source):
+    board = make_empty_board()
+    source_pos = neighbor_pos(*pos, source)
+    source_doors = [False] * 4
+    source_doors[OPPOSITE[source]] = True
+    place(board, *source_pos, Tile("room", tuple(source_doors)))
+    doors = [False] * 4
+    doors[source] = True
+    assert can_place(Tile("room", tuple(doors)), pos, board, {source_pos}) == (True, "ok")
+    doors[outside] = True
+    ok, reason = can_place(Tile("room", tuple(doors)), pos, board, {source_pos})
+    assert not ok
+    assert "door_faces_outside_board" in reason
+
+
+def test_queries_preserve_room_and_event_state():
+    board = make_empty_board()
+    place(board, 3, 3, make_tile(e=True, event_resolved=True))
+    place(board, 3, 4, make_tile(w=True, e=True, event_outcome={"hp": -1}))
+    candidate = make_tile(w=True, event_category="supply", event_outcome={"supplies": 1})
+    before = deepcopy((board, candidate))
+    reachable = reachable_rooms(board, (3, 3))
+    assert frontier_cells(board, reachable) == {(3, 5)}
+    assert can_place(candidate, (3, 5), board, reachable) == (True, "ok")
+    assert not can_place(candidate, (3, 4), board, reachable)[0]
+    assert (board, candidate) == before
 

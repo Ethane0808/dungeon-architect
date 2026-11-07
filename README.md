@@ -10,6 +10,14 @@ Dungeon Architect 是一款 Python 3.14.7 + pygame-ce 製作的單人 2D 空間�
 
 **兩階段原則：** MVP 必須可獨立遊玩、成功或失敗；MVP 完成並測試後，才進入 Final Goal，設計回合制、空間解謎或混合 Boss 相關玩法。現階段**不實作 Boss 戰鬥或主動干擾**。
 
+## 目前實作狀態
+
+- 開發 Phase 1：純 Python 的 7×7 棋盤、旋轉、嚴格拼接、可達性及 frontier。
+- 開發 Phase 2：`engine/cards.py` 提供所有合法放置枚舉、三張卡保底、可設定的事件類別預覽，以及可供未來道具恢復的 `blocked` 狀態。API 與使用範例見 `TECH_SPEC.md` §5.2.1。
+- `main.py` 仍是視窗骨架；卡片／地圖 UI、實際事件、資源、目標與勝敗尚未整合。上述開發階段屬於 MVP 內部工作，並非 Final Goal。
+
+在專案根目錄執行 `python -m pytest -q` 可跑完整測試；`python -m pytest tests/test_cards.py -q` 只跑卡片系統。若 Windows 的 `python` 捷徑未正確設定，改用已安裝的 Python 直譯器完整路徑。
+
 ## 文件導覽
 
 | 文件 | 用途 | 主要讀者 |

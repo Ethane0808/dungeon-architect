@@ -33,6 +33,7 @@ engine/
   objectives.py    # 祭壇、核心、勝敗判定
   game.py          # 遊戲狀態與動作協調
 ui/
+  app.py           # 已實作：鍵鼠輸入與 pygame 事件迴圈
   screens.py       # 畫面繪製與操作回饋
   widgets.py       # 卡片、狀態列、預覽與訊息
 assets/             # 圖像、字型、音效；版權要有來源
@@ -169,3 +170,24 @@ else:
 ## 7. 測試可重現性
 
 亂數統一由 `random.Random(seed)` 管理，保持牌序與事件結果可重現。可顯示 seed 給除錯人員。細節見 `TEST_PLAN.md`。
+
+## 8. Phase 3 建造沙盒（已實作）
+
+本階段將既有規則接到 pygame，不實作完整 MVP。暫用 `(3, 0)` 單一起點與 N/E/S 三出口，不引入祭壇、核心或新遊戲規則。角色依 P05 暫定方案在放置後自動進入新房，尚無獨立移動操作；事件只保存卡片類別，不結算效果。
+
+| 模組／API | 職責 |
+|---|---|
+| `engine.game.BuildSession(seed=42, config=None)` | 純 Python 沙盒狀態；持有棋盤、角色位置、建造回合、專用 RNG 與已抽出的 `DrawResult` |
+| `select_card(index)`／`rotate_selected(times=1)` | 選擇與旋轉預覽；每張卡各自保存方向，不修改原卡或消耗亂數；不可操作時回傳 `False` |
+| `selected_card`／`card_at(index)` | 取得指定方向的不可變卡片預覽 |
+| `preview(pos)`／`legal_cells()` | 依當下棋盤重新驗證當前卡片方向；回傳 `(ok, reason)`／合法位置集合，不修改任何遊戲狀態 |
+| `place(pos)` | 再驗證後才放置、移入、建造回合 +1 並更新手牌；回傳 `(ok, reason)` |
+| `restart()` | 以相同 seed 重建整局；不提供只重抽手牌的 UI |
+| `ui.app.GameApp` | 鍵鼠事件與顯示迴圈；規則判定交給 `BuildSession` |
+| `ui.screens.GameRenderer` | 繪製 7×7 地圖、門牆、卡片與事件類別、旋轉／高亮／錯誤理由、blocked 與重開按鈕；不修改狀態 |
+
+`place` 先在新棋盤上準備下一手，完成後才一次寫入 session 狀態；若抽牌拋出例外，棋盤、手牌、角色、回合與 RNG 均保留原狀。非法點擊不改任何上述資料。外部程式不可直接修改 session 棋盤後沿用既有手牌快照；未來恢復道具需在成功提交後明確更新手牌。
+
+`main.py` 支援 `--seed`（預設 42）。只有呼叫 `main()`／直接執行才初始化 pygame，並在關閉或例外時釋放 pygame；模組匯入不開視窗。畫面邏輯尺寸為 1100×740，row/col 依 `BOARD_RECT` 與格寬 72 換算，右／下邊界不納入棋盤。UI 以 A–G、1–7 顯示座標，內部仍為 0–6。
+
+手動驗證：`python main.py --seed 42`；自動驗證：`python -m pytest -q`。UI 測試使用 SDL dummy 顯示／音效驅動，檢查真實 pygame 事件、渲染與生命週期，不需可見桌面。

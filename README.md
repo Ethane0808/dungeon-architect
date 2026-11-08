@@ -14,9 +14,36 @@ Dungeon Architect 是一款 Python 3.14.7 + pygame-ce 製作的單人 2D 空間�
 
 - 開發 Phase 1：純 Python 的 7×7 棋盤、旋轉、嚴格拼接、可達性及 frontier。
 - 開發 Phase 2：`engine/cards.py` 提供所有合法放置枚舉、三張卡保底、可設定的事件類別預覽，以及可供未來道具恢復的 `blocked` 狀態。API 與使用範例見 `TECH_SPEC.md` §5.2.1。
-- `main.py` 仍是視窗骨架；卡片／地圖 UI、實際事件、資源、目標與勝敗尚未整合。上述開發階段屬於 MVP 內部工作，並非 Final Goal。
+- 開發 Phase 3：`main.py` 啟動 pygame 建造沙盒，顯示地圖、三張卡、旋轉與合法放置預覽，支援放置後抽下一手、blocked 提示與同 seed 重開。輸入、繪製及純 Python 狀態協調分開。
+- 沙盒暫用單一起點 `(3, 0)`，向北／東／南開門；祭壇與核心關卡尚未建立。移動操作、事件結算、資源、道具、目標與勝敗留待後續開發。上述開發階段屬於 MVP 內部工作，並非 Final Goal。
 
 在專案根目錄執行 `python -m pytest -q` 可跑完整測試；`python -m pytest tests/test_cards.py -q` 只跑卡片系統。若 Windows 的 `python` 捷徑未正確設定，改用已安裝的 Python 直譯器完整路徑。
+
+## 啟動 Phase 3 沙盒
+
+```powershell
+python main.py --seed 42
+```
+
+若 Windows 的 `python` 捷徑沒有輸出，本機目前可使用：
+
+```powershell
+& "C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe" main.py --seed 42
+```
+
+其他組員請使用自己安裝的直譯器路徑；程式本身不依賴以上本機路徑。
+
+| 操作 | 行為 |
+|---|---|
+| 點卡片或按 `1`／`2`／`3` | 選卡；每張卡保留各自的預覽方向 |
+| `R`／Rotate 按鈕 | 順時針旋轉 90° |
+| `Q` | 逆時針旋轉 90° |
+| 游標移到地圖 | 預覽當前方向；青綠色格表示可放置，非法位置顯示原因 |
+| 左鍵點合法格 | 放置、角色自動移入新房、建造回合 +1、棄掉該手三卡並抽下一手 |
+| `N`／Restart 按鈕 | 清空整局，使用相同 seed 重新開始 |
+| `Esc`／關閉視窗 | 離開 |
+
+選卡、旋轉、預覽及非法點擊不抽新卡、不改棋盤、不增加回合。事件類別會保留在新房間上，但這個版本不結算效果。沒有普通合法放置時顯示 blocked，允許重開，不判定勝敗。
 
 ## 文件導覽
 

@@ -1,24 +1,25 @@
-# pyrefly: ignore[missing-import]
+"""Launch the Phase 3 construction sandbox with an optional reproducible seed."""
+
+import argparse
+
 import pygame
 
-def main() -> None:
-    """啟動 Phase 1 視窗；匯入模組不初始化 pygame。"""
+from engine.game import BuildSession
+from ui.app import GameApp
+from ui.screens import WINDOW_SIZE
+
+
+def main(argv=None) -> None:
+    """Importing this module never initializes pygame or opens a window."""
+    parser = argparse.ArgumentParser(description="Dungeon Architect construction sandbox")
+    parser.add_argument("--seed", type=int, default=42, help="reproducible card-draw seed (default: 42)")
+    args = parser.parse_args(argv)
+    session = BuildSession(seed=args.seed)
     pygame.init()
     try:
-        screen = pygame.display.set_mode((800, 600))
+        screen = pygame.display.set_mode(WINDOW_SIZE)
         pygame.display.set_caption("Dungeon Architect")
-
-        clock = pygame.time.Clock()
-        running = True
-
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-
-            screen.fill((30, 35, 45))
-            pygame.display.flip()
-            clock.tick(60)
+        GameApp(session).run(screen)
     finally:
         pygame.quit()
 

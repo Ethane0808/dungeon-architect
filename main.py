@@ -1,4 +1,4 @@
-"""Launch the Phase 3 construction sandbox with an optional reproducible seed."""
+"""Launch the exploration sandbox with an optional reproducible seed."""
 
 import argparse
 

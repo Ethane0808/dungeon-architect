@@ -24,7 +24,7 @@ class Tile:
     kind  : 房型字串，例如 'dead_end', 'straight', 'corner', 't_junction', 'cross',
             或特殊房 'start', 'altar_a', 'altar_b', 'core'
     event_category : None | 'supply' | 'danger' | 'neutral'
-    event_outcome  : 事件結果（MVP 以 dict 儲存，例如 {'hp': -1}）
+    event_outcome  : 首次進房後的實際資源變化，例如 {'hp': -1, 'supplies': 0}
     event_resolved : 是否已觸發過（首次進入後設為 True）
     special_state  : None | 'locked' | 'unlocked' | 'activated'
                      特殊房才使用；幾何匹配(door_match)與通行(can_traverse)分開

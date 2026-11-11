@@ -2,11 +2,16 @@
 
 import pygame
 
+from engine.directions import N, E, S, W, neighbor_pos
 from engine.game import BuildSession
 from ui.screens import (
     RESTART_RECT, ROTATE_RECT, GameRenderer,
-    ROOM_NAMES, card_at_pixel, cell_at_pixel, cell_label, placement_message,
+    ROOM_NAMES, card_at_pixel, cell_at_pixel, cell_label, movement_message, placement_message,
 )
+
+
+MOVEMENT_KEYS = {pygame.K_UP: N, pygame.K_w: N, pygame.K_RIGHT: E, pygame.K_d: E,
+                 pygame.K_DOWN: S, pygame.K_s: S, pygame.K_LEFT: W, pygame.K_a: W}
 
 
 class GameApp:
@@ -30,6 +35,11 @@ class GameApp:
         self.hovered_pos = None
         self.message = "Layout restarted with the same seed. Choose a card."
 
+    def move(self, pos) -> None:
+        ok, reason = self.session.move(pos)
+        self.message = (f"Moved to {cell_label(pos)}. Backtracking is free."
+                        if ok else movement_message(reason))
+
     def handle_event(self, event) -> None:
         if event.type == pygame.QUIT:
             self.running = False
@@ -46,6 +56,8 @@ class GameApp:
                 self.rotate(-1)
             elif event.key == pygame.K_n:
                 self.restart()
+            elif event.key in MOVEMENT_KEYS:
+                self.move(neighbor_pos(*self.session.player_pos, MOVEMENT_KEYS[event.key]))
         elif event.type == pygame.MOUSEMOTION:
             self.hovered_pos = cell_at_pixel(event.pos)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -63,6 +75,9 @@ class GameApp:
                 if pos is None:
                     return
                 self.hovered_pos = pos
+                if self.session.board[pos[0]][pos[1]] is not None and pos != self.session.player_pos:
+                    self.move(pos)
+                    return
                 card = self.session.selected_card
                 ok, reason = self.session.place(pos)
                 if ok:

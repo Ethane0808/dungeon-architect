@@ -18,7 +18,8 @@ from engine.placement import reachable_rooms
 
 def snapshot(session):
     return deepcopy((session.board, session.player_pos, session.draw_result,
-                     session.build_turn, session.selected_index, session.rotations)), session.rng.getstate()
+                     session.build_turn, session.selected_index, session.rotations,
+                     session.resources, session.current_event)), session.rng.getstate()
 
 
 def choose_legal(session):
@@ -90,7 +91,10 @@ def test_build_commits_orientation_category_and_next_hand(session):
     assert session.place(option.pos) == (True, "ok")
     tile = session.board[option.pos[0]][option.pos[1]]
     assert (tile.kind, tile.doors, tile.event_category) == (card.kind, card.doors, card.event_category)
-    assert tile.event_outcome is None and not tile.event_resolved
+    assert tile.event_resolved
+    assert session.current_event.category == card.event_category
+    assert tile.event_outcome == {"hp": session.current_event.hp_delta,
+                                  "supplies": session.current_event.supplies_delta}
     assert session.player_pos == option.pos and session.build_turn == 1
     assert session.selected_card is None
     assert session.rotations == [0] * len(session.draw_result.cards)

@@ -14,6 +14,8 @@ python -m pytest -q
 | [`test_engine.py`](tests/test_engine.py) | 四向旋轉（ROT-01）、嚴格拼接（PLACE-01～04）、可達性與鎖定（MOVE-01～02）。 |
 | [`test_cards.py`](tests/test_cards.py) | 旋轉去重（ROT-02）、抽卡保底、全圖邊界、無合法放置（DRAW-01～03），以及權重、事件類別與固定 seed（RNG-01）。 |
 | [`test_game.py`](tests/test_game.py) | 手牌與旋轉預覽、非法放置、成功換牌、抽牌例外回復、長建造序列、卡關重開。 |
+| [`test_events.py`](tests/test_events.py) | 三類事件首次進入、免費重訪、四向移動、門牆與鎖定、類別一致、設定驗證、固定 seed、零 HP、滿資源、事件／抽牌例外回復、重開。 |
+| [`test_resources.py`](tests/test_resources.py) | HP 傷害與回復、HP／Supplies 上下限、無上限 Supplies、初始值與整數驗證、不可變快照。 |
 | [`test_ui.py`](tests/test_ui.py)、[`test_entrypoints.py`](tests/test_entrypoints.py) | 使用 SDL dummy 檢查輸入、邊界、渲染、畫面回饋、程式啟動與關閉，並驗證匯入入口模組時不開視窗。 |
 
 ## 2. 桌面試玩
@@ -25,6 +27,16 @@ python -m pytest -q
 3. 非法點擊應保留手牌。合法點擊只建一間房，角色移入並換牌，成功訊息在游標原地時仍看得見。
 4. 走到 blocked 後確認仍能重開。 `N` 與 Restart 都應重現同 seed 的初始牌序。測試 `Esc`、標題列關閉、重新啟動與長 seed 顯示。
 5. 在實際 Windows 顯示縮放下確認 1100×740 的畫面、字型和按鈕可用。
+
+### Phase 4 人工檢查
+
+1. 開局確認 HP 6／6、Supplies 2／5，最後事件區尚無事件。只選卡、旋轉及移動游標時資源不變，卡片只顯示類別。
+2. 建造補給、危險與普通房時，確認角色自動進入，事件文字與卡片類別一致：目前暫定 Supplies +1、HP −1 或無資源變化。下一手仍有合法卡，除非已無普通合法放置。
+3. 用方向鍵、WASD 和點相鄰已建房間往返；手牌、選擇、旋轉、建造回合及資源應維持。事件區明確標成 LAST EVENT，走回去不會新增獎勵或再次傷害。
+4. 嘗試走入空格、跨牆、斜角、非相鄰房間與地圖外，以及非法建造；角色、資源與事件標記應維持。上鎖核心已由引擎測試覆蓋，正常沙盒尚無核心房。
+5. Supplies 達上限後再進補給房，應標記事件但顯示沒有資源變化。HP 歸零應安全顯示 HP depleted；本階段尚未實作結算畫面。需要可重現邊界時，可暫調未提交的原型數值，檢查後還原。
+6. 用 N 與 Restart 重開，確認地圖、資源、事件通知與原 seed 牌序復原；換另一個 seed 再試。檢查 No normal placement 時仍能走訪已建房間。
+7. 在實際螢幕檢查標題旁 HP／Supplies、右下事件訊息、實際增減顏色、下方按鍵提示有無裁切；自動化測試只使用 SDL dummy，無法驗證實體螢幕縮放。
 
 ## 3. MVP 驗收
 

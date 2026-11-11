@@ -9,7 +9,10 @@ import pytest
 
 from engine.cards import load_card_config
 from engine.game import BuildSession
-from engine.directions import rotate_doors
+from engine.directions import DIRECTIONS, OPPOSITE, neighbor_pos, rotate_doors
+from engine.models import Tile, make_empty_board
+from engine.resources import Resources
+from tests.test_events import category_session
 from ui.app import GameApp
 from ui.screens import (
     BOARD_RECT, CARD_RECTS, RESTART_RECT, ROTATE_RECT, WINDOW_SIZE, GOLD, MUTED, TEAL,
@@ -288,7 +291,7 @@ def test_quit_ignores_later_actions_in_the_same_event_batch(app, screen, monkeyp
     assert (app.session.board, app.session.draw_result, app.session.rng.getstate()) == before
 
 
-def test_unsupported_movement_keys_and_right_click_do_not_change_game(app):
+def test_movement_into_empty_cells_and_right_click_do_not_change_game(app):
     select_legal(app)
     before = deepcopy(app.session.board), app.session.draw_result, app.session.rng.getstate(), app.session.player_pos
     for code in (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT,
@@ -320,3 +323,102 @@ def test_player_marker_moves_to_new_room_immediately(app, screen):
     app.draw(screen)
     assert screen.get_at(cell_rect(option.pos).center)[:3] == GOLD
     assert screen.get_at(cell_rect(old_pos).center)[:3] != GOLD
+
+
+@pytest.mark.parametrize("code,direction", [
+    (pygame.K_UP, 0), (pygame.K_w, 0), (pygame.K_RIGHT, 1), (pygame.K_d, 1),
+    (pygame.K_DOWN, 2), (pygame.K_s, 2), (pygame.K_LEFT, 3), (pygame.K_a, 3),
+])
+def test_walking_keys_resolve_entry_and_update_the_player_marker(app, screen, code, direction):
+    session = app.session = category_session("supply")
+    session.board = make_empty_board()
+    session.player_pos = (3, 3)
+    session.board[3][3] = Tile("start", tuple(side == direction for side in DIRECTIONS))
+    pos = neighbor_pos(3, 3, direction)
+    session.board[pos[0]][pos[1]] = Tile("dead_end", tuple(side == OPPOSITE[direction] for side in DIRECTIONS),
+                                       event_category="supply")
+    before = session.draw_result, session.build_turn, session.rng.getstate()
+    key(app, code)
+    assert session.player_pos == pos
+    assert session.resources.supplies == 3
+    assert session.board[pos[0]][pos[1]].event_resolved
+    assert (session.draw_result, session.build_turn, session.rng.getstate()) == before
+    app.draw(screen)
+    assert screen.get_at(cell_rect(pos).center)[:3] == GOLD
+
+
+def test_clicking_existing_adjacent_room_walks_without_repeated_rewards(app, screen):
+    app.session = category_session("supply")
+    start = app.session.player_pos
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    assert app.session.resources.supplies == 3
+    key(app, pygame.K_1)
+    key(app, pygame.K_r)
+    before = app.session.draw_result, app.session.rotations[:], app.session.selected_index
+    for _ in range(3):
+        click(app, cell_rect(start).center)
+        assert app.session.player_pos == start
+        click(app, cell_rect(option.pos).center)
+    assert app.session.resources.supplies == 3 and app.session.build_turn == 1
+    assert (app.session.draw_result, app.session.rotations, app.session.selected_index) == before
+    app.draw(screen)
+
+
+def test_hud_shows_resources_event_message_and_actual_deltas(app, screen):
+    app.session = category_session("danger")
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    labels = [call.args[1] for call in texts.call_args_list]
+    assert "HP 5 / 6" in labels and "Supplies 2 / 5" in labels
+    assert "You encountered a trap!" in labels and "HP -1" in labels
+    assert any(label.startswith("LAST EVENT: Danger at ") for label in labels)
+    key(app, pygame.K_n)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    labels = [call.args[1] for call in texts.call_args_list]
+    assert "HP 6 / 6" in labels and "Supplies 2 / 5" in labels
+    assert not any(label.startswith("LAST EVENT:") for label in labels)
+
+
+def test_zero_hp_hud_and_capped_rewards_render_safely(app, screen):
+    app.session = category_session("danger", resources=Resources(1, 6, 2, 5))
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    assert "HP 0 / 6" in [call.args[1] for call in texts.call_args_list]
+    assert app.running and app.session.hp_depleted
+    app.session = category_session("supply", resources=Resources(6, 6, 5, 5))
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    labels = [call.args[1] for call in texts.call_args_list]
+    assert "Supplies +1" not in labels
+    assert any(label.startswith("No resource change") for label in labels)
+
+
+def test_rendering_hover_feedback_never_resolves_an_unvisited_event(app, screen):
+    session = app.session = category_session("supply")
+    session.board[3][1] = Tile("dead_end", (False, False, False, True), event_category="supply")
+    before = deepcopy(session.board), session.resources, session.current_event, session.rng.getstate()
+    app.hovered_pos = (3, 1)
+    for _ in range(3):
+        app.draw(screen)
+    assert (session.board, session.resources, session.current_event, session.rng.getstate()) == before
+
+
+def test_new_hud_and_footer_labels_fit_the_existing_window(app, screen):
+    app.session = category_session("supply")
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    for call in texts.call_args_list:
+        message, pos = call.args[1:3]
+        font = call.args[4] if len(call.args) > 4 else call.kwargs.get("font", app.renderer.font)
+        assert 0 <= pos[0] and pos[0] + font.size(message)[0] <= WINDOW_SIZE[0]
+        assert 0 <= pos[1] and pos[1] + font.get_linesize() <= WINDOW_SIZE[1]

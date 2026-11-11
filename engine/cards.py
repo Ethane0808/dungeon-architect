@@ -1,7 +1,7 @@
 """Pure Python legal-placement enumeration and protected three-card draws.
 
 Only event-category previews are generated here. Event resolution, placement
-commits, resources, recovery tools and game-over decisions belong to later phases.
+commits, resources, recovery tools and game-over decisions live outside this module.
 """
 
 from __future__ import annotations

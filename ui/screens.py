@@ -1,4 +1,4 @@
-"""Room/map/card drawing and pixel geometry for the Phase 3 sandbox."""
+"""Room/map/card drawing, resource HUD and first-entry event feedback."""
 
 import re
 
@@ -14,6 +14,7 @@ BOARD_RECT = pygame.Rect(60, 124, CELL_SIZE * BOARD_SIZE, CELL_SIZE * BOARD_SIZE
 CARD_RECTS = tuple(pygame.Rect(626, 112 + index * 156, 442, 144) for index in range(3))
 RESTART_RECT = pygame.Rect(922, 24, 146, 40)
 ROTATE_RECT = pygame.Rect(626, 594, 170, 40)
+EVENT_RECT = pygame.Rect(626, 646, 442, 62)
 
 BACKGROUND = (14, 22, 32)
 PANEL = (22, 33, 46)
@@ -67,6 +68,18 @@ def placement_message(reason: str) -> str:
     if reason.startswith("door_faces_outside_board"):
         return f"The {side} door would face outside the map."
     return "This room cannot be placed here."
+
+
+def movement_message(reason: str) -> str:
+    return {
+        "ok": "Click to walk into this room. Backtracking is free.",
+        "out_of_bounds": "Stay inside the map.",
+        "not_adjacent": "Walk one room at a time using arrows or WASD.",
+        "no_room": "Build a room before walking there.",
+        "doors_not_connected": "Both rooms need matching doors to walk through.",
+        "room_locked": "This room is locked.",
+        "invalid_source": "Your current room cannot be traversed.",
+    }.get(reason, "You cannot walk there.")
 
 
 class GameRenderer:
@@ -145,6 +158,11 @@ class GameRenderer:
         surface.fill(BACKGROUND)
         self.text(surface, "DUNGEON ARCHITECT", (28, 22), font=self.title_font)
         self.text(surface, "Plan the rooms. Shape the path.", (30, 58), MUTED, self.small_font)
+        resources = session.resources
+        self.text(surface, f"HP {resources.hp} / {resources.hp_max}", (354, 26),
+                  RED if session.hp_depleted else TEXT)
+        limit = f" / {resources.supplies_max}" if resources.supplies_max is not None else ""
+        self.text(surface, f"Supplies {resources.supplies}{limit}", (354, 53), GOLD)
         seed_label = self.fit_text(f"Seed {session.seed}", RESTART_RECT.left - 626 - 12)
         self.text(surface, seed_label, (626, 35), MUTED)
         self.button(surface, RESTART_RECT, "Restart  [N]")
@@ -176,12 +194,14 @@ class GameRenderer:
             self.text(surface, str(index + 1), (42, BOARD_RECT.top + index * CELL_SIZE + 28),
                       MUTED, self.small_font)
         if hovered_pos is not None:
-            ok, reason = session.preview(hovered_pos)
+            occupied = session.board[hovered_pos[0]][hovered_pos[1]] is not None
+            walking = occupied and hovered_pos != session.player_pos
+            ok, reason = (session.movement_preview(hovered_pos) if walking else session.preview(hovered_pos))
             rect = cell_rect(hovered_pos).inflate(-4, -4)
             card = session.selected_card
             if card is not None and session.board[hovered_pos[0]][hovered_pos[1]] is None:
                 self.room(surface, rect, card.doors, TEAL if ok else RED)
-            border = (TEAL if ok else RED) if card is not None else MUTED
+            border = (TEAL if ok else RED) if card is not None or walking else MUTED
             pygame.draw.rect(surface, border, rect, width=3, border_radius=7)
         else:
             reason = "no_normal_placement" if session.blocked else "no_card_selected"
@@ -212,20 +232,39 @@ class GameRenderer:
             pygame.draw.rect(surface, PANEL, rect, border_radius=10)
             pygame.draw.rect(surface, RED, rect, width=2, border_radius=10)
             self.text(surface, "No normal placement", (650, 270), RED, self.heading_font)
-            self.wrapped_text(surface, "No room shape fits your open exits. Restart and try a different path.",
+            self.wrapped_text(surface, "No room shape fits your open exits. You can still walk through built rooms or restart.",
                               pygame.Rect(650, 312, 390, 60), MUTED)
 
         self.button(surface, ROTATE_RECT, "Rotate  [R]", session.selected_card is not None)
         self.text(surface, "Q rotates counterclockwise", (810, 607), MUTED, self.small_font)
-        pygame.draw.circle(surface, TEAL, (632, 664), 4)
-        self.text(surface, "Teal cells fit this rotation", (646, 655), MUTED, self.small_font)
-        pygame.draw.circle(surface, GOLD, (632, 688), 4)
-        self.text(surface, "Gold dot marks your current room", (646, 679), MUTED, self.small_font)
-        feedback = placement_message(reason) if hovered_pos is not None and session.selected_card is not None else message
-        if session.blocked:
+        pygame.draw.rect(surface, PANEL, EVENT_RECT, border_radius=8)
+        notification = session.current_event
+        if notification is not None:
+            color = EVENT_COLORS.get(notification.category, MUTED)
+            title = f"LAST EVENT: {notification.category.title()} at {cell_label(notification.pos)}"
+            self.text(surface, title, (638, 651), color, self.small_font)
+            self.text(surface, self.fit_text(notification.message, 418), (638, 669))
+            deltas = []
+            if notification.hp_delta:
+                deltas.append(f"HP {notification.hp_delta:+d}")
+            if notification.supplies_delta:
+                deltas.append(f"Supplies {notification.supplies_delta:+d}")
+            change = "  |  ".join(deltas) or "No resource change (unchanged or at a limit)"
+            self.text(surface, change, (638, 691),
+                      RED if notification.hp_delta < 0 or notification.supplies_delta < 0 else TEAL,
+                      self.small_font)
+        else:
+            self.text(surface, "Enter a new room to discover its event.", (638, 663), MUTED)
+        feedback = message
+        if hovered_pos is not None and walking:
+            feedback = movement_message(reason)
+        elif hovered_pos is not None and session.selected_card is not None:
+            feedback = placement_message(reason)
+        if session.blocked and hovered_pos is None:
             feedback = placement_message("no_normal_placement")
+        if session.hp_depleted:
+            feedback = "HP depleted (0). Press N to restart."
         pygame.draw.rect(surface, PANEL, (28, 660, 566, 48), border_radius=8)
         self.wrapped_text(surface, feedback, pygame.Rect(40, 665, 540, 44), RED if session.blocked else TEXT)
-        self.text(surface, "1 / 2 / 3  Select     R / Q  Rotate     Click  Build     N  Restart     Esc  Quit",
+        self.text(surface, "1 / 2 / 3 Select   R / Q Rotate   Click Build / Walk   Arrows / WASD Walk   N Restart   Esc Quit",
                   (30, 719), MUTED, self.small_font)
-        self.text(surface, "Events are previews in this build", (810, 719), MUTED, self.small_font)

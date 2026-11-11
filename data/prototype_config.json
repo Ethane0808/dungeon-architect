@@ -35,9 +35,9 @@
       "cross":      { "supply": 3, "danger": 3, "neutral": 4 }
     },
     "outcomes": {
-      "supply": { "supplies_delta": 1 },
-      "danger": { "hp_delta": -1 },
-      "neutral": {}
+      "supply": { "supplies_delta": 1, "message": "You discovered supplies!" },
+      "danger": { "hp_delta": -1, "message": "You encountered a trap!" },
+      "neutral": { "message": "A quiet room. You can catch your breath." }
     }
   },
 

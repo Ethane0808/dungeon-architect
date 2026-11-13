@@ -1,0 +1,24 @@
+{
+  "_comment": "Verified default-config winning run. This proves one playable seed, not that every seed is solvable. Card numbers are 1-based; turns are clockwise quarter-turns.",
+  "seed": 159,
+  "actions": [
+    { "action": "build", "pos": [3, 1], "card": 2, "turns": 1 },
+    { "action": "build", "pos": [3, 2], "card": 3, "turns": 1 },
+    { "action": "build", "pos": [3, 3], "card": 2, "turns": 1 },
+    { "action": "build", "pos": [3, 4], "card": 1, "turns": 1 },
+    { "action": "build", "pos": [3, 5], "card": 2, "turns": 0 },
+    { "action": "build", "pos": [2, 5], "card": 1, "turns": 0 },
+    { "action": "build", "pos": [1, 5], "card": 2, "turns": 0 },
+    { "action": "build", "pos": [0, 5], "card": 1, "turns": 1 },
+    { "action": "move", "pos": [0, 6] },
+    { "action": "build", "pos": [4, 5], "card": 1, "turns": 0 },
+    { "action": "build", "pos": [5, 5], "card": 3, "turns": 0 },
+    { "action": "build", "pos": [6, 5], "card": 2, "turns": 0 },
+    { "action": "move", "pos": [6, 6] },
+    { "action": "move", "pos": [6, 5] },
+    { "action": "move", "pos": [5, 5] },
+    { "action": "move", "pos": [4, 5] },
+    { "action": "move", "pos": [3, 5] },
+    { "action": "move", "pos": [3, 6] }
+  ]
+}

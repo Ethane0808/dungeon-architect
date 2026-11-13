@@ -16,11 +16,15 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 | `engine/directions.py`、`engine/models.py` | 方位、旋轉、`Tile`、棋盤與通行狀態。 |
 | `engine/placement.py` | BFS 可達性、候選空格與嚴格拼接。 |
 | `engine/cards.py` | 設定驗證、合法放置枚舉、加權抽卡及事件類別預覽。 |
-| `engine/game.py` | `BuildSession` 管理棋盤、逐格移動、自動進房、手牌、回合、RNG、資源及最後事件。 |
+| `engine/game.py` | 保留 `BuildSession` 的 Phase 4 建造與事件控制器，供 MVP 擴充及既有測試重用。 |
+| `engine/mvp.py` | `MvpSession(BuildSession)` 串接固定關卡、目標、工具、勝負、原子操作與重開。 |
+| `engine/level.py` | 不可變關卡設定、固定房門向與潛在連通驗證。 |
+| `engine/tools.py` | 工具設定與純幾何變更，費用及提交由 session 處理。 |
+| `engine/demo.py`、`data/mvp_demo.json` | 透過公開動作重播 seed 159 通關，不覆寫棋盤、卡片或平衡值。 |
 | `engine/events.py` | 讀取類別效果、純函式結算，以及帶實際資源變化的事件通知。 |
 | `engine/resources.py` | 不可變的 HP／Supplies 快照、範圍驗證與整數增減。 |
 | `ui/app.py`、`ui/screens.py` | 輸入轉交 session，繪製地圖、牌面和操作回饋。 |
-| [`data/prototype_config.json`](data/prototype_config.json) | 載入地圖、房型、抽牌、事件類別與效果、初始資源及上限。道具與目標設定仍未使用。 |
+| [`data/prototype_config.json`](data/prototype_config.json) | 載入地圖、房型、抽牌、事件、資源、目標與工具設定；v0.10 的目標包含明確門向。 |
 
 ## 3. 座標與方向
 
@@ -28,7 +32,7 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 
 ## 4. 資料與通行
 
-`Board` 是 7×7 的 `Tile | None` 格陣，`None` 表示空格。起點為 `(3, 0)`，向北、東、南開門。特殊房間的鎖定狀態會影響 BFS 通行，門牆仍照常參與放置驗證。棋盤形狀錯誤會拋出 `ValueError`。
+`Board` 是 7×7 的 `Tile | None` 格陣，`None` 表示空格。主程式載入 `LevelConfig` 的固定房間：預設起點 `(3, 0)` 向北／東／南，祭壇 `(0, 6)` 向南／西、`(6, 6)` 向北／西，核心 `(3, 6)` 向北／南／西。特殊房間的鎖定狀態會影響 BFS 通行，門牆仍照常參與放置驗證。棋盤形狀錯誤會拋出 `ValueError`。原本 `BuildSession` 仍可單獨用於只有起點的 Phase 4 沙盒。
 
 ## 5. 規則與狀態更新
 
@@ -70,12 +74,35 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 |---|---|
 | `load_resources(path=DEFAULT_CONFIG_PATH)` | 從 `player.hp_initial`、`hp_max`、`supplies_initial`、選用的 `supplies_max`／`supplies_min` 建立初始值。 |
 | `resources.apply(hp_delta=0, supplies_delta=0)` | 回傳新的有界快照；HP 固定下限 0，Supplies 下限預設 0。`supplies_max=None` 表示無上限。 |
-| `resources.hp_depleted`／`session.hp_depleted` | HP 為 0 時為 True；不自動判定敗北或停止操作。 |
+| `resources.hp_depleted`／`session.hp_depleted` | HP 為 0 時為 True；純資源物件不判定勝負。`MvpSession` 會轉為 LOST 並停止操作。 |
 | `session.resources` | 目前 HP、HP 上限、Supplies 及其上下限，供 HUD 只讀顯示。 |
 | `BuildSession(..., resources=None, event_config=None)` | 可注入初始資源與事件設定；預設讀取原型 JSON，重開沿用同一份初始快照。 |
 
-不另新增花費、回合補給、再生或道具規則。既有 JSON 的所有平衡數值仍為 P08 暫定試玩值。
+資源物件不自行收費、回合補給或再生；工具與里程碑由 MVP 控制器套用。既有 JSON 的所有平衡數值仍為 P08 暫定試玩值。
 
-### 5.6 後續功能的整合
+### 5.6 關卡與目標 API
 
-房間事件在首次進入時更新資源與結算標記。若採用暫定道具，先驗證修改後的門牆、餘額與使用次數，成功後再扣費與更新可達位置。勝負檢查需合併可達目標、事件資源、普通建造及可用道具。具體玩法見[遊戲設計](GAME_DESIGN.md)。
+`SpecialRoom(kind, pos, doors)` 與 `LevelConfig(start, altars, core, first_altar_supplies=1)` 是不可變資料。`load_level_config()` 讀取 `objectives.start`／`core` 的 `{pos, doors}`、`altars` 的 `[{id, pos, doors}, ...]` 與第一座祭壇補給。祭壇至少一座，預設兩座；數量、座標與門向皆可調整。
+
+驗證拒絕非 7×7、非整數座標、非布林門向、門朝外、重疊、重複名稱與固定鄰房門牆衝突。潛在路線驗證把空格視為可配置通路：所有祭壇需在不穿過鎖定核心的條件下有潛在路線，核心解鎖後需有潛在路線。這不是牌序或全局可解性保證。`make_board()` 每次建立全新 Tile，核心為 locked，祭壇尚未啟動。
+
+`MvpSession(..., level=None, tools=None)` 預設載入關卡與工具，也保留 `BuildSession` 的 seed、卡片、資源與事件設定注入介面。`activated_altars` 是實際進入過的祭壇 id 集合；不是 BFS 可達集合。`core_unlocked` 只在所有設定祭壇都已啟動時成立；進入解鎖核心才轉為 WON。第一次啟動祭壇給設定的 Supplies，受上限限制且不重複發放。
+
+### 5.7 工具 API
+
+`ToolRule(cost_supplies, max_uses_per_game)` 驗證正整數費用與非負整數次數；`ToolConfig` 從既有 `items.door_seal`／`emergency_chisel` 載入。`tool_uses` 記錄本局成功次數。可花額為 `supplies - supplies_min`，不能靠下限截斷而少付。
+
+| API | 行為 |
+|---|---|
+| `preview_with_seal(pos, direction)`／`legal_cells_with_seal(direction)` | 依選中卡當前方向封一扇門，保留事件類別，重驗全部邊、可達入口、費用與次數；不改狀態。 |
+| `place_with_seal(pos, direction)` | 與建造、自動進房、事件及下一手一起提交費用和次數；失敗完全保留原狀態。 |
+| `chisel_preview(source, target)` | 來源須可達，雙方是相鄰既有未鎖定房間，共用邊須牆對牆。 |
+| `chisel(source, target)` | 同時開兩側門，扣費及計次，重新計算可達與合法位置；不自動移入、不啟動祭壇、不觸發事件。 |
+
+有現成手牌時，目標解鎖或鑿壁只更新合法位置快照，保留卡片、旋轉與亂數。若原本 blocked 且手牌為空，恢復合法普通建造後才抽新保底手牌。沒有無限重抽。
+
+### 5.8 原子更新與終局
+
+每個 MVP 建造、移動與工具動作先準備私有候選狀態：複製棋盤列、旋轉、使用次數與 RNG；Tile 變更使用 `dataclasses.replace`。沿用 Phase 4 放置／進房驗證，所有事件、目標與抽卡準備完成後才提交。抽牌或目標更新途中例外不會改動原棋盤、HP、Supplies、目標、使用次數、手牌或 RNG。
+
+狀態為 `PLAYING`、`WON` 或 `LOST`。HP 歸零為 LOST；全部祭壇啟動並進入核心為 WON。終局拒絕選卡、旋轉、放置、移動與工具，僅保留重開及離開。blocked 只代表沒有普通合法放置，不代表敗北；不做全局可解性偵測。`restart()` 以原始設定及 seed 還原整局。

@@ -6,6 +6,7 @@ import pygame
 
 from engine.game import BuildSession
 from engine.models import BOARD_SIZE
+from engine.placement import frontier_cells, reachable_rooms
 
 
 WINDOW_SIZE = (1100, 740)
@@ -15,6 +16,9 @@ CARD_RECTS = tuple(pygame.Rect(626, 112 + index * 156, 442, 144) for index in ra
 RESTART_RECT = pygame.Rect(922, 24, 146, 40)
 ROTATE_RECT = pygame.Rect(626, 594, 170, 40)
 EVENT_RECT = pygame.Rect(626, 646, 442, 62)
+SEAL_RECT = pygame.Rect(806, 584, 126, 32)
+CHISEL_RECT = pygame.Rect(942, 584, 126, 32)
+END_RESTART_RECT = pygame.Rect(450, 422, 200, 44)
 
 BACKGROUND = (14, 22, 32)
 PANEL = (22, 33, 46)
@@ -25,6 +29,7 @@ MUTED = (151, 174, 185)
 TEAL = (72, 204, 171)
 GOLD = (238, 190, 103)
 RED = (229, 113, 119)
+PURPLE = (161, 151, 225)
 EVENT_COLORS = {"supply": TEAL, "danger": RED, "neutral": MUTED}
 ROOM_NAMES = {"dead_end": "Dead end", "straight": "Straight", "corner": "Corner",
               "t_junction": "T junction", "cross": "Cross", "start": "Start"}
@@ -82,6 +87,30 @@ def movement_message(reason: str) -> str:
     }.get(reason, "You cannot walk there.")
 
 
+def tool_message(reason: str) -> str:
+    return {
+        "ok": "Valid tool action. Click to apply.",
+        "insufficient_supplies": "Not enough Supplies for this tool.",
+        "usage_limit": "This tool has no uses remaining.",
+        "tool_exhausted": "This tool has no uses remaining.",
+        "tool_limit_reached": "This tool has no uses remaining.",
+        "invalid_direction": "Select a north, east, south or west door.",
+        "not_a_door": "Door Seal needs an existing doorway.",
+        "no_entrance": "Keep at least one matching entrance to the new room.",
+        "room_locked": "A locked room cannot be opened with the chisel.",
+        "locked_room": "A locked room cannot be opened with the chisel.",
+        "not_adjacent": "Choose one adjacent existing room for the chisel.",
+        "no_room": "The chisel joins two existing rooms across a shared wall.",
+        "already_connected": "These rooms already have matching doors.",
+        "invalid_position": "Choose a room inside the map.",
+        "not_wall_pair": "The chisel needs a wall on both sides of the shared edge.",
+        "walls_not_matching": "The chisel needs a wall on both sides of the shared edge.",
+        "source_unreachable": "Walk to a connected source room before using the chisel.",
+        "unreachable_source": "Walk to a connected source room before using the chisel.",
+        "game_over": "This run has ended. Restart to play again.",
+    }.get(reason, placement_message(reason))
+
+
 class GameRenderer:
     def __init__(self):
         self.title_font = pygame.font.Font(None, 34)
@@ -92,17 +121,18 @@ class GameRenderer:
     def text(self, surface, message, pos, color=TEXT, font=None):
         surface.blit((font or self.font).render(message, True, color), pos)
 
-    def fit_text(self, message: str, width: int) -> str:
+    def fit_text(self, message: str, width: int, font=None) -> str:
         """Shorten a display label without changing its underlying value."""
-        if self.font.size(message)[0] <= width:
+        font = font or self.font
+        if font.size(message)[0] <= width:
             return message
         suffix = "..."
-        if self.font.size(suffix)[0] > width:
+        if font.size(suffix)[0] > width:
             return ""
         low, high = 0, len(message)
         while low < high:
             middle = (low + high + 1) // 2
-            if self.font.size(message[:middle] + suffix)[0] <= width:
+            if font.size(message[:middle] + suffix)[0] <= width:
                 low = middle
             else:
                 high = middle - 1
@@ -154,7 +184,14 @@ class GameRenderer:
                 pygame.draw.line(surface, MUTED, start, (start[0], cy - width // 2 - 2), 2)
                 pygame.draw.line(surface, MUTED, (start[0], cy + width // 2 + 2), end, 2)
 
-    def draw(self, surface, session: BuildSession, hovered_pos, message: str):
+    def draw(self, surface, session: BuildSession, hovered_pos, message: str, *,
+             seal_direction: int | None = None, chisel_mode: bool = False):
+        mvp = hasattr(session, "level")
+        terminal = getattr(session, "status", "PLAYING") in ("WON", "LOST")
+        if terminal:
+            hovered_pos = None
+            seal_direction = None
+            chisel_mode = False
         surface.fill(BACKGROUND)
         self.text(surface, "DUNGEON ARCHITECT", (28, 22), font=self.title_font)
         self.text(surface, "Plan the rooms. Shape the path.", (30, 58), MUTED, self.small_font)
@@ -170,7 +207,10 @@ class GameRenderer:
         rooms = sum(tile is not None for row in session.board for tile in row)
         self.text(surface, f"YOUR DUNGEON    {rooms} / 49 rooms", (48, 94), MUTED, self.small_font)
         self.text(surface, "YOUR ROOM CARDS", (626, 86), MUTED, self.small_font)
-        legal = session.legal_cells()
+        legal = (session.legal_cells_with_seal(seal_direction) if seal_direction is not None
+                 else session.legal_cells())
+        frontier = frontier_cells(session.board, reachable_rooms(session.board, session.player_pos)) if mvp else set()
+        altar_positions = {altar.pos: index + 1 for index, altar in enumerate(session.level.altars)} if mvp else {}
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 pos = (row, col)
@@ -180,28 +220,54 @@ class GameRenderer:
                 pygame.draw.rect(surface, TEAL if fits else LINE, rect, width=1, border_radius=7)
                 tile = session.board[row][col]
                 if tile is not None:
-                    self.room(surface, rect, tile.doors, (127, 166, 171) if tile.kind == "start" else TEAL)
+                    color = (127, 166, 171) if tile.kind == "start" else TEAL
+                    if pos in altar_positions:
+                        color = GOLD if tile.kind in session.activated_altars else PURPLE
+                    elif mvp and pos == session.level.core.pos:
+                        color = GOLD if session.core_unlocked else RED
+                    self.room(surface, rect, tile.doors, color)
                     if tile.kind == "start":
                         self.text(surface, "S", (rect.left + 7, rect.top + 5), GOLD, self.small_font)
+                    elif pos in altar_positions:
+                        self.text(surface, f"A{altar_positions[pos]}", (rect.left + 7, rect.top + 5), color, self.small_font)
+                    elif mvp and pos == session.level.core.pos:
+                        self.text(surface, "C+" if session.core_unlocked else "C-",
+                                  (rect.left + 7, rect.top + 5), color, self.small_font)
                     elif tile.event_category:
                         pygame.draw.circle(surface, EVENT_COLORS.get(tile.event_category, MUTED),
                                            (rect.right - 9, rect.bottom - 9), 3)
                 elif not fits:
-                    pygame.draw.circle(surface, LINE, rect.center, 2)
+                    pygame.draw.circle(surface, TEAL if pos in frontier else LINE, rect.center, 3 if pos in frontier else 2)
+                if chisel_mode and tile is not None and session.chisel_preview(session.player_pos, pos)[0]:
+                    pygame.draw.rect(surface, GOLD, rect, width=2, border_radius=7)
         for index in range(BOARD_SIZE):
             self.text(surface, chr(ord('A') + index),
                       (BOARD_RECT.left + index * CELL_SIZE + 30, 108), MUTED, self.small_font)
             self.text(surface, str(index + 1), (42, BOARD_RECT.top + index * CELL_SIZE + 28),
                       MUTED, self.small_font)
+        if mvp:
+            checks = "  ".join(f"A{index + 1} {cell_label(altar.pos)} [{'x' if altar.kind in session.activated_altars else ' '}]"
+                                for index, altar in enumerate(session.level.altars))
+            core = f"Core {cell_label(session.level.core.pos)}: {'OPEN' if session.core_unlocked else 'LOCKED'}"
+            self.text(surface, self.fit_text(f"{core}  |  {checks}", 526, self.small_font),
+                      (48, 632), MUTED, self.small_font)
         if hovered_pos is not None:
             occupied = session.board[hovered_pos[0]][hovered_pos[1]] is not None
             walking = occupied and hovered_pos != session.player_pos
-            ok, reason = (session.movement_preview(hovered_pos) if walking else session.preview(hovered_pos))
+            if chisel_mode:
+                ok, reason = session.chisel_preview(session.player_pos, hovered_pos)
+            elif walking:
+                ok, reason = session.movement_preview(hovered_pos)
+            elif seal_direction is not None:
+                ok, reason = session.preview_with_seal(hovered_pos, seal_direction)
+            else:
+                ok, reason = session.preview(hovered_pos)
             rect = cell_rect(hovered_pos).inflate(-4, -4)
             card = session.selected_card
-            if card is not None and session.board[hovered_pos[0]][hovered_pos[1]] is None:
-                self.room(surface, rect, card.doors, TEAL if ok else RED)
-            border = (TEAL if ok else RED) if card is not None or walking else MUTED
+            if card is not None and not chisel_mode and session.board[hovered_pos[0]][hovered_pos[1]] is None:
+                doors = tuple(False if side == seal_direction else value for side, value in enumerate(card.doors))
+                self.room(surface, rect, doors, TEAL if ok else RED)
+            border = (TEAL if ok else RED) if card is not None or walking or chisel_mode else MUTED
             pygame.draw.rect(surface, border, rect, width=3, border_radius=7)
         else:
             reason = "no_normal_placement" if session.blocked else "no_card_selected"
@@ -215,13 +281,20 @@ class GameRenderer:
             pygame.draw.rect(surface, PANEL, rect, border_radius=10)
             pygame.draw.rect(surface, GOLD if selected else LINE, rect, width=2, border_radius=10)
             shown = session.card_at(index)
-            self.room(surface, pygame.Rect(rect.x + 12, rect.y + 26, 92, 92), shown.doors)
+            shown_doors = (tuple(False if side == seal_direction else value for side, value in enumerate(shown.doors))
+                           if selected else shown.doors)
+            self.room(surface, pygame.Rect(rect.x + 12, rect.y + 26, 92, 92), shown_doors)
             self.text(surface, ROOM_NAMES.get(card.kind, card.kind.replace('_', ' ').title()),
                       (rect.x + 122, rect.y + 22), font=self.heading_font)
             category_color = EVENT_COLORS.get(card.event_category, MUTED)
             self.text(surface, card.event_category.title() + " preview", (rect.x + 122, rect.y + 53), category_color)
-            playable = index in session.draw_result.legal_card_indices
-            self.text(surface, "Fits in some rotation" if playable else "No fit on this map",
+            if selected and seal_direction is not None:
+                playable = bool(legal)
+                fit_message = "Seal fits this rotation" if playable else "No fit with this seal"
+            else:
+                playable = index in session.draw_result.legal_card_indices
+                fit_message = "Fits in some rotation" if playable else "No fit on this map"
+            self.text(surface, fit_message,
                       (rect.x + 122, rect.y + 81), TEAL if playable else MUTED, self.small_font)
             self.text(surface, f"Rotation {session.rotations[index] * 90} deg",
                       (rect.x + 122, rect.y + 108), MUTED, self.small_font)
@@ -235,8 +308,23 @@ class GameRenderer:
             self.wrapped_text(surface, "No room shape fits your open exits. You can still walk through built rooms or restart.",
                               pygame.Rect(650, 312, 390, 60), MUTED)
 
-        self.button(surface, ROTATE_RECT, "Rotate  [R]", session.selected_card is not None)
-        self.text(surface, "Q rotates counterclockwise", (810, 607), MUTED, self.small_font)
+        self.button(surface, ROTATE_RECT, "Rotate  [R]", session.selected_card is not None and not terminal)
+        if mvp:
+            seal_label = "Seal [F]" if seal_direction is None else f"Seal {'NESW'[seal_direction]} [F]"
+            self.button(surface, SEAL_RECT, seal_label, session.selected_card is not None and not terminal)
+            self.button(surface, CHISEL_RECT, "Chisel [C]", not terminal)
+            if seal_direction is not None:
+                pygame.draw.rect(surface, GOLD, SEAL_RECT, width=2, border_radius=8)
+            if chisel_mode:
+                pygame.draw.rect(surface, GOLD, CHISEL_RECT, width=2, border_radius=8)
+            seal = session.tools.door_seal
+            chisel = session.tools.emergency_chisel
+            remaining_seal = seal.max_uses_per_game - session.tool_uses["door_seal"]
+            remaining_chisel = chisel.max_uses_per_game - session.tool_uses["emergency_chisel"]
+            self.text(surface, f"Seal {seal.cost_supplies}S / {remaining_seal} left   Chisel {chisel.cost_supplies}S / {remaining_chisel} left",
+                      (806, 620), MUTED, self.small_font)
+        else:
+            self.text(surface, "Q rotates counterclockwise", (810, 607), MUTED, self.small_font)
         pygame.draw.rect(surface, PANEL, EVENT_RECT, border_radius=8)
         notification = session.current_event
         if notification is not None:
@@ -256,15 +344,37 @@ class GameRenderer:
         else:
             self.text(surface, "Enter a new room to discover its event.", (638, 663), MUTED)
         feedback = message
-        if hovered_pos is not None and walking:
+        if hovered_pos is not None and chisel_mode:
+            feedback = tool_message(reason)
+        elif hovered_pos is not None and walking:
             feedback = movement_message(reason)
         elif hovered_pos is not None and session.selected_card is not None:
-            feedback = placement_message(reason)
-        if session.blocked and hovered_pos is None:
-            feedback = placement_message("no_normal_placement")
-        if session.hp_depleted:
+            feedback = tool_message(reason) if seal_direction is not None else placement_message(reason)
+        if session.blocked and hovered_pos is None and not chisel_mode:
+            feedback = ("No normal room fits. You can walk, use a tool or restart." if mvp
+                        else placement_message("no_normal_placement"))
+        if session.hp_depleted and not mvp:
             feedback = "HP depleted (0). Press N to restart."
         pygame.draw.rect(surface, PANEL, (28, 660, 566, 48), border_radius=8)
         self.wrapped_text(surface, feedback, pygame.Rect(40, 665, 540, 44), RED if session.blocked else TEXT)
-        self.text(surface, "1 / 2 / 3 Select   R / Q Rotate   Click Build / Walk   Arrows / WASD Walk   N Restart   Esc Quit",
+        footer = ("1/2/3 Select  R/Q Rotate  Click Build/Walk  Arrows/WASD Walk  F Seal  C Chisel  N Restart  Esc Quit"
+                  if mvp else "1 / 2 / 3 Select   R / Q Rotate   Click Build / Walk   Arrows / WASD Walk   N Restart   Esc Quit")
+        self.text(surface, footer,
                   (30, 719), MUTED, self.small_font)
+        if terminal:
+            shade = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+            shade.fill((5, 11, 17, 205))
+            surface.blit(shade, (0, 0))
+            panel = pygame.Rect(170, 220, 760, 300)
+            pygame.draw.rect(surface, PANEL, panel, border_radius=14)
+            won = session.status == "WON"
+            color = GOLD if won else RED
+            pygame.draw.rect(surface, color, panel, width=2, border_radius=14)
+            self.text(surface, "VICTORY" if won else "DEFEAT", (220, 252), color, self.title_font)
+            explanation = ("All altars are active. You reached the unlocked core."
+                           if won else "Your HP reached zero. Try a different route or use your tools earlier.")
+            self.wrapped_text(surface, explanation, pygame.Rect(220, 312, 660, 60))
+            self.text(surface, f"Rooms built: {session.build_turn}   HP: {resources.hp}   Supplies: {resources.supplies}",
+                      (220, 382), MUTED)
+            self.button(surface, END_RESTART_RECT, "Restart  [N]")
+            self.text(surface, "Esc closes the game", (468, 482), MUTED, self.small_font)

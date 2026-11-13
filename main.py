@@ -1,20 +1,20 @@
-"""Launch the exploration sandbox with an optional reproducible seed."""
+"""Launch the complete MVP with an optional reproducible seed."""
 
 import argparse
 
 import pygame
 
-from engine.game import BuildSession
+from engine.mvp import MvpSession
 from ui.app import GameApp
 from ui.screens import WINDOW_SIZE
 
 
 def main(argv=None) -> None:
     """Importing this module never initializes pygame or opens a window."""
-    parser = argparse.ArgumentParser(description="Dungeon Architect construction sandbox")
+    parser = argparse.ArgumentParser(description="Dungeon Architect: activate the altars and reach the core")
     parser.add_argument("--seed", type=int, default=42, help="reproducible card-draw seed (default: 42)")
     args = parser.parse_args(argv)
-    session = BuildSession(seed=args.seed)
+    session = MvpSession(seed=args.seed)
     pygame.init()
     try:
         screen = pygame.display.set_mode(WINDOW_SIZE)

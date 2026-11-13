@@ -1,0 +1,258 @@
+"""MVP objective, tool selection and terminal screens through headless inputs."""
+
+from copy import deepcopy
+from dataclasses import replace
+from unittest.mock import patch
+
+import pygame
+import pytest
+
+from engine.cards import Card, load_card_config
+from engine.level import LevelConfig, SpecialRoom
+from engine.models import Tile
+from engine.mvp import GameStatus, MvpSession
+from engine.resources import Resources
+from ui.app import GameApp
+from ui.screens import (CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
+                        WINDOW_SIZE, GOLD, PURPLE, RED, cell_rect, tool_message)
+
+
+@pytest.fixture
+def screen(monkeypatch):
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    pygame.init()
+    yield pygame.display.set_mode(WINDOW_SIZE)
+    pygame.quit()
+
+
+@pytest.fixture
+def app(screen):
+    return GameApp(MvpSession(seed=42))
+
+
+def key(app, code):
+    app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=code))
+
+
+def click(app, pos):
+    app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos))
+
+
+def labels(app, screen):
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    return [call.args[1] for call in texts.call_args_list]
+
+
+def chain_level():
+    return LevelConfig(
+        SpecialRoom("start", (3, 0), (False, True, False, False)),
+        (SpecialRoom("altar_a", (3, 1), (False, True, False, True)),
+         SpecialRoom("altar_b", (3, 2), (False, True, False, True))),
+        SpecialRoom("core", (3, 3), (False, False, False, True)),
+    )
+
+
+def state(session):
+    return deepcopy((session.board, session.player_pos, session.resources, session.draw_result,
+                     session.selected_index, session.rotations, session.build_turn, session.tool_uses,
+                     session.activated_altars, session.current_event, session.status)), session.rng.getstate()
+
+
+def test_default_mvp_shows_fixed_objectives_tool_costs_and_core_lock(app, screen):
+    shown = labels(app, screen)
+    assert "A1" in shown and "A2" in shown and "C-" in shown
+    assert any("A1 G1 [ ]" in line and "A2 G7 [ ]" in line and "LOCKED" in line for line in shown)
+    assert any("Seal 1S / 3 left" in line and "Chisel 2S / 2 left" in line for line in shown)
+    assert app.session.status == GameStatus.PLAYING
+
+
+def test_special_room_colors_distinguish_unvisited_altar_and_locked_core(app, screen):
+    app.draw(screen)
+    assert screen.get_at(cell_rect(app.session.level.altars[0].pos).center)[:3] == PURPLE
+    assert screen.get_at(cell_rect(app.session.level.core.pos).center)[:3] == RED
+
+
+def test_objective_checklist_updates_on_real_entry_and_shows_victory(screen):
+    app = GameApp(MvpSession(seed=0, level=chain_level()))
+    assert app.session.blocked  # No construction is needed; walking is still legal.
+    key(app, pygame.K_RIGHT)
+    shown = labels(app, screen)
+    assert any("A1 B4 [x]" in line and "A2 C4 [ ]" in line and "LOCKED" in line for line in shown)
+    key(app, pygame.K_RIGHT)
+    shown = labels(app, screen)
+    assert any("A1 B4 [x]" in line and "A2 C4 [x]" in line and "OPEN" in line for line in shown)
+    assert screen.get_at(cell_rect(app.session.level.core.pos).center)[:3] == GOLD
+    key(app, pygame.K_RIGHT)
+    assert app.session.status == GameStatus.WON
+    assert "VICTORY" in labels(app, screen)
+
+
+def test_seal_cycles_current_doors_and_rotation_or_selection_cancels(app):
+    key(app, pygame.K_1)
+    original = app.session.selected_card
+    before = app.session.resources, app.session.rng.getstate(), app.session.draw_result
+    doors = [side for side, present in enumerate(original.doors) if present]
+    for direction in doors:
+        key(app, pygame.K_f)
+        assert app.seal_direction == direction
+        assert app.session.selected_card == original
+    key(app, pygame.K_f)
+    assert app.seal_direction is None
+    click(app, SEAL_RECT.center)
+    assert app.seal_direction == doors[0]
+    key(app, pygame.K_r)
+    assert app.seal_direction is None
+    key(app, pygame.K_f)
+    key(app, pygame.K_2)
+    assert app.seal_direction is None
+    assert (app.session.resources, app.session.rng.getstate(), app.session.draw_result) == before
+
+
+def test_chisel_button_and_key_toggle_without_spending_resources(app):
+    before = state(app.session)
+    click(app, CHISEL_RECT.center)
+    assert app.chisel_mode and "2 Supplies" in app.message
+    key(app, pygame.K_c)
+    assert not app.chisel_mode
+    key(app, pygame.K_f)  # No selected card, so no action or charge.
+    assert app.seal_direction is None
+    assert state(app.session) == before
+
+
+def test_invalid_chisel_click_preserves_state_and_explains_target(app, screen):
+    key(app, pygame.K_c)
+    before = state(app.session)
+    click(app, cell_rect((3, 1)).center)
+    assert app.chisel_mode
+    assert state(app.session) == before
+    assert "existing" in app.message
+    app.draw(screen)
+
+
+def test_chisel_click_joins_existing_wall_pair_and_debits_once(app, screen):
+    session = app.session
+    session.board[3][1] = Tile("corner", (True, False, False, True))
+    session.board[3][2] = Tile("dead_end", (True, False, False, False))
+    session.player_pos = (3, 1)
+    key(app, pygame.K_c)
+    click(app, cell_rect((3, 2)).center)
+    assert not app.chisel_mode
+    assert session.board[3][1].doors[1] and session.board[3][2].doors[3]
+    assert session.resources.supplies == 0
+    assert session.tool_uses["emergency_chisel"] == 1
+    assert session.player_pos == (3, 1)
+    app.draw(screen)
+
+
+def test_sealed_placement_through_click_charges_only_after_success(app, screen):
+    session = app.session
+    # Seal north on a north/east/west T; the resulting east/west room retains
+    # its entry through the west door and is placed by the existing click flow.
+    card = Card("t_junction", (True, True, False, True), "neutral")
+    session.draw_result = replace(session.draw_result, cards=(card, *session.draw_result.cards[1:]))
+    key(app, pygame.K_1)
+    key(app, pygame.K_f)
+    assert app.seal_direction == 0
+    before = state(session)
+    click(app, cell_rect(session.player_pos).center)
+    assert state(session) == before and app.seal_direction == 0
+    click(app, cell_rect((3, 1)).center)
+    assert app.seal_direction is None
+    assert session.player_pos == (3, 1)
+    assert session.board[3][1].doors == (False, True, False, True)
+    assert session.resources.supplies == 1
+    assert session.tool_uses["door_seal"] == 1
+    app.draw(screen)
+
+
+@pytest.mark.parametrize("status", [GameStatus.WON, GameStatus.LOST])
+def test_terminal_screens_block_gameplay_and_allow_restart(app, screen, status):
+    app.session.status = status
+    if status == GameStatus.LOST:
+        app.session.resources = app.session.resources.apply(hp_delta=-100)
+    before = state(app.session)
+    for code in (pygame.K_1, pygame.K_r, pygame.K_f, pygame.K_c, pygame.K_RIGHT):
+        key(app, code)
+    for point in (CARD_RECTS[0].center, SEAL_RECT.center, CHISEL_RECT.center, cell_rect((3, 1)).center):
+        click(app, point)
+    assert state(app.session) == before
+    assert ("VICTORY" if status == GameStatus.WON else "DEFEAT") in labels(app, screen)
+    click(app, END_RESTART_RECT.center)
+    assert app.session.status == GameStatus.PLAYING
+    assert not app.terminal and app.seal_direction is None and not app.chisel_mode
+    assert app.session.resources == app.session.initial_resources
+
+
+def test_real_zero_hp_entry_renders_defeat_then_keyboard_restart(screen):
+    config = load_card_config()
+    config = replace(config, room_types=tuple(replace(room, event_weights=(("danger", 1),))
+                                             for room in config.room_types))
+    app = GameApp(MvpSession(seed=42, config=config, resources=Resources(1, 6, 2, 5)))
+    session = app.session
+    option = next(choice for choice in session.draw_result.legal_placements
+                  if any(card.kind == choice.kind for card in session.draw_result.cards))
+    index = next(index for index, card in enumerate(session.draw_result.cards) if card.kind == option.kind)
+    key(app, pygame.K_1 + index)
+    for _ in range(option.rotation):
+        key(app, pygame.K_r)
+    click(app, cell_rect(option.pos).center)
+    assert session.status == GameStatus.LOST
+    assert "DEFEAT" in labels(app, screen)
+    key(app, pygame.K_n)
+    assert session.status == GameStatus.PLAYING and session.resources.hp == 1
+
+
+def test_mvp_text_fits_existing_window_and_rendering_does_not_change_state(app, screen):
+    before = state(app.session)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    for call in texts.call_args_list:
+        message, pos = call.args[1:3]
+        font = call.args[4] if len(call.args) > 4 else call.kwargs.get("font", app.renderer.font)
+        assert pos[0] >= 0 and pos[0] + font.size(message)[0] <= WINDOW_SIZE[0]
+        assert pos[1] >= 0 and pos[1] + font.get_linesize() <= WINDOW_SIZE[1]
+    assert state(app.session) == before
+
+
+@pytest.mark.parametrize("reason,fragment", [("tool_limit_reached", "remaining"),
+                                           ("insufficient_supplies", "Supplies"),
+                                           ("room_locked", "locked"), ("already_connected", "already")])
+def test_tool_feedback_explains_rejections(reason, fragment):
+    assert fragment in tool_message(reason)
+
+
+@pytest.mark.parametrize("seed,index,expect_fit", [(3, 0, False), (42, 2, True)])
+def test_sealed_card_label_matches_the_displayed_room_legality(app, screen, seed, index, expect_fit):
+    app.session = MvpSession(seed=seed)
+    assert app.session.draw_result.cards[index].kind == ("cross" if expect_fit else "dead_end")
+    assert index in app.session.draw_result.legal_card_indices
+    key(app, pygame.K_1 + index)
+    key(app, pygame.K_f)
+    assert app.seal_direction == 0
+    assert bool(app.session.legal_cells_with_seal(app.seal_direction)) == expect_fit
+    before = state(app.session)
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    selected_labels = [call.args[1] for call in texts.call_args_list
+                       if CARD_RECTS[index].collidepoint(call.args[2])]
+    assert ("Seal fits this rotation" if expect_fit else "No fit with this seal") in selected_labels
+    assert "Fits in some rotation" not in selected_labels
+    assert state(app.session) == before
+
+
+def test_revisiting_an_altar_shows_movement_instead_of_stale_activation(screen):
+    app = GameApp(MvpSession(seed=0, level=chain_level()))
+    key(app, pygame.K_RIGHT)
+    key(app, pygame.K_RIGHT)
+    assert "Altar B activated" in app.message
+    before_resources = app.session.resources
+    before_event = app.session.current_event
+    before_activated = app.session.activated_altars
+    key(app, pygame.K_LEFT)
+    assert app.session.player_pos == (3, 1)
+    assert app.message == "Moved to B4. Backtracking is free."
+    assert app.session.resources == before_resources
+    assert app.session.current_event == before_event
+    assert app.session.activated_altars == before_activated

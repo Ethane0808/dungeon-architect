@@ -1,6 +1,6 @@
 {
   "_comment": "PROVISIONAL 測試數值（DECISIONS.md P08）。正式平衡調整前先以此為基準。",
-  "_spec_version": "v0.9",
+  "_spec_version": "v0.10",
 
   "board": {
     "size": 7,
@@ -43,16 +43,18 @@
 
   "objectives": {
     "_comment": "[PROVISIONAL] 祭壇與核心位置（P01/P02）；固定關卡布局",
-    "start":   [3, 0],
-    "altar_a": [0, 6],
-    "altar_b": [6, 6],
-    "core":    [3, 6],
-    "altar_a_milestone_supplies": 1,
+    "start": { "pos": [3, 0], "doors": [true, true, true, false] },
+    "altars": [
+      { "id": "altar_a", "pos": [0, 6], "doors": [false, false, true, true] },
+      { "id": "altar_b", "pos": [6, 6], "doors": [true, false, false, true] }
+    ],
+    "core": { "pos": [3, 6], "doors": [true, false, true, true] },
+    "first_altar_supplies": 1,
     "_comment2": "啟動第一座祭壇獲得 1 Supplies 里程碑（GAME_DESIGN §5）"
   },
 
   "items": {
-    "_comment": "[PROVISIONAL] 建議道具（P07）；具體實作見 GAME_DESIGN §建議測試道具",
+    "_comment": "[PROVISIONAL] MVP 道具（P07）：封一扇新卡的門；鑿開兩間既有未上鎖房的共用牆",
     "door_seal": {
       "cost_supplies": 1,
       "max_uses_per_game": 3

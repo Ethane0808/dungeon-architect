@@ -5,7 +5,7 @@ import pygame
 from engine.directions import N, E, S, W, neighbor_pos
 from engine.game import BuildSession
 from ui.screens import (
-    RESTART_RECT, ROTATE_RECT, SEAL_RECT, CHISEL_RECT, END_RESTART_RECT, GameRenderer,
+    RESTART_RECT, HELP_RECT, ROTATE_RECT, SEAL_RECT, CHISEL_RECT, END_RESTART_RECT, GameRenderer,
     ROOM_NAMES, card_at_pixel, cell_at_pixel, cell_label, movement_message, placement_message, tool_message,
 )
 
@@ -23,6 +23,7 @@ class GameApp:
         self.message = getattr(session, "objective_message", "Choose a room card, then explore an open exit.")
         self.seal_direction: int | None = None
         self.chisel_mode = False
+        self.help_open = False
 
     @property
     def is_mvp(self) -> bool:
@@ -98,7 +99,13 @@ class GameApp:
         elif event.type in (pygame.WINDOWLEAVE, pygame.WINDOWFOCUSLOST):
             self.hovered_pos = None
         elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
+            if event.key in (pygame.K_h, pygame.K_QUESTION):
+                self.help_open = not self.help_open
+            elif self.help_open and event.key == pygame.K_ESCAPE:
+                self.help_open = False
+            elif self.help_open:
+                return
+            elif event.key == pygame.K_ESCAPE:
                 self.running = False
             elif event.key == pygame.K_n:
                 self.restart()
@@ -120,7 +127,11 @@ class GameApp:
             self.hovered_pos = cell_at_pixel(event.pos)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             self.hovered_pos = cell_at_pixel(event.pos)
-            if RESTART_RECT.collidepoint(event.pos):
+            if HELP_RECT.collidepoint(event.pos):
+                self.help_open = not self.help_open
+            elif self.help_open:
+                return
+            elif RESTART_RECT.collidepoint(event.pos):
                 self.restart()
             elif self.terminal:
                 if END_RESTART_RECT.collidepoint(event.pos):
@@ -166,7 +177,8 @@ class GameApp:
 
     def draw(self, surface) -> None:
         self.renderer.draw(surface, self.session, self.hovered_pos, self.message,
-                           seal_direction=self.seal_direction, chisel_mode=self.chisel_mode)
+                           seal_direction=self.seal_direction, chisel_mode=self.chisel_mode,
+                           help_open=self.help_open)
 
     def run(self, screen) -> None:
         clock = pygame.time.Clock()

@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import pygame
@@ -13,8 +14,8 @@ from engine.models import Tile
 from engine.mvp import GameStatus, MvpSession
 from engine.resources import Resources
 from ui.app import GameApp
-from ui.screens import (CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
-                        WINDOW_SIZE, GOLD, PURPLE, RED, cell_rect, tool_message)
+from ui.screens import (BOARD_RECT, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
+                        WINDOW_SIZE, GOLD, cell_rect, tool_message)
 
 
 @pytest.fixture
@@ -63,15 +64,52 @@ def state(session):
 def test_default_mvp_shows_fixed_objectives_tool_costs_and_core_lock(app, screen):
     shown = labels(app, screen)
     assert "A1" in shown and "A2" in shown and "C-" in shown
-    assert any("A1 G1 [ ]" in line and "A2 G7 [ ]" in line and "LOCKED" in line for line in shown)
+    assert "A1 G1" in shown and "A2 G7" in shown and "CORE G4" in shown and "LOCKED" in shown
     assert any("Seal 1S / 3 left" in line and "Chisel 2S / 2 left" in line for line in shown)
     assert app.session.status == GameStatus.PLAYING
 
 
-def test_special_room_colors_distinguish_unvisited_altar_and_locked_core(app, screen):
+def test_paved_exits_reach_the_correct_edges_on_board_and_cards(app):
+    for mask in range(16):
+        doors = tuple(bool(mask & (1 << side)) for side in range(4))
+        for tiles in (app.renderer.room_tiles, app.renderer.card_tiles):
+            sprite = tiles[doors]
+            w, h = sprite.get_size()
+            edges = ((w // 2, 0), (w - 1, h // 2), (w // 2, h - 1), (0, h // 2))
+            assert tuple(sprite.get_at(point).a > 200 for point in edges) == doors
+
+
+@pytest.mark.parametrize("pos, asset", [
+    ((0, 6), "altar_a-idle-sw"), ((6, 6), "altar_b-idle-nw"), ((3, 6), "core-locked-nsw"),
+])
+def test_special_rooms_show_their_initial_art(app, screen, pos, asset):
     app.draw(screen)
-    assert screen.get_at(cell_rect(app.session.level.altars[0].pos).center)[:3] == PURPLE
-    assert screen.get_at(cell_rect(app.session.level.core.pos).center)[:3] == RED
+    sprite = pygame.image.load(Path(__file__).resolve().parents[1] / "assets" / "rooms" / f"{asset}-72.png")
+    area = cell_rect(pos).move(-BOARD_RECT.x, -BOARD_RECT.y)
+    expected = app.renderer.board_floor.subsurface(area).convert(screen)
+    expected.blit(sprite, (0, 0))
+    center = pygame.Rect(22, 22, 28, 28)
+    actual = screen.subsurface(center.move(cell_rect(pos).topleft))
+    assert pygame.image.tobytes(actual, "RGB") == pygame.image.tobytes(expected.subsurface(center), "RGB")
+
+
+def test_both_altars_share_one_full_tile_design():
+    room_dir = Path(__file__).resolve().parents[1] / "assets" / "rooms"
+    for state in ("idle", "activated"):
+        altar_a = pygame.image.load(room_dir / f"altar_a-{state}-sw-72.png")
+        altar_b = pygame.image.load(room_dir / f"altar_b-{state}-nw-72.png")
+        restored = pygame.transform.rotate(altar_b, 90)
+        assert pygame.image.tobytes(altar_a, "RGBA") == pygame.image.tobytes(restored, "RGBA")
+        assert altar_a.get_bounding_rect(min_alpha=12) == pygame.Rect(0, 0, 72, 72)
+
+
+def test_locked_core_is_a_full_independent_room_and_differs_from_unlocked_core():
+    room_dir = Path(__file__).resolve().parents[1] / "assets" / "rooms"
+    locked = pygame.image.load(room_dir / "core-locked-nsw-72.png")
+    unlocked = pygame.image.load(room_dir / "core-unlocked-nsw-72.png")
+    assert locked.get_bounding_rect(min_alpha=12).height == 72
+    assert unlocked.get_bounding_rect(min_alpha=12).height == 72
+    assert pygame.image.tobytes(locked, "RGBA") != pygame.image.tobytes(unlocked, "RGBA")
 
 
 def test_objective_checklist_updates_on_real_entry_and_shows_victory(screen):
@@ -79,10 +117,11 @@ def test_objective_checklist_updates_on_real_entry_and_shows_victory(screen):
     assert app.session.blocked  # No construction is needed; walking is still legal.
     key(app, pygame.K_RIGHT)
     shown = labels(app, screen)
-    assert any("A1 B4 [x]" in line and "A2 C4 [ ]" in line and "LOCKED" in line for line in shown)
+    assert "A1 B4" in shown and "ACTIVE" in shown and "A2 C4" in shown and "LOCKED" in shown
     key(app, pygame.K_RIGHT)
     shown = labels(app, screen)
-    assert any("A1 B4 [x]" in line and "A2 C4 [x]" in line and "OPEN" in line for line in shown)
+    assert shown.count("ACTIVE") == 2 and "OPEN" in shown
+    # This custom horizontal fixture has no matching bespoke objective-room art.
     assert screen.get_at(cell_rect(app.session.level.core.pos).center)[:3] == GOLD
     key(app, pygame.K_RIGHT)
     assert app.session.status == GameStatus.WON

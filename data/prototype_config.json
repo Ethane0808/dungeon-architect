@@ -1,5 +1,5 @@
 {
-  "_comment": "PROVISIONAL 測試數值（DECISIONS.md P08）。正式平衡調整前先以此為基準。",
+  "_comment": "PROVISIONAL 測試數值。正式平衡調整前先以此為基準。",
   "_spec_version": "v0.10",
 
   "board": {

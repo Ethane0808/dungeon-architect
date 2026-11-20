@@ -3,7 +3,7 @@ tests/test_engine.py
 ====================
 Dungeon Architect — 第一階段核心引擎 pytest 測試。
 
-覆蓋 TEST_PLAN.md：
+核心驗收案例：
   ROT-01   任意房型順時針轉四次回到原樣
   PLACE-01 門對門，所有已建鄰邊也匹配 → 允許放置
   PLACE-02 來源入口匹配，但另一相鄰邊門對牆 → 禁止

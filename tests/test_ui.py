@@ -15,7 +15,7 @@ from engine.resources import Resources
 from tests.test_events import category_session
 from ui.app import GameApp
 from ui.screens import (
-    BOARD_RECT, CARD_RECTS, RESTART_RECT, ROTATE_RECT, WINDOW_SIZE, GOLD, MUTED, TEAL,
+    BOARD_RECT, CARD_RECTS, HELP_RECT, RESTART_RECT, ROTATE_RECT, WINDOW_SIZE, MUTED, TEAL,
     card_at_pixel, cell_at_pixel, cell_rect, placement_message,
 )
 
@@ -42,6 +42,12 @@ def key(app, code):
     app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=code))
 
 
+def labels(app, screen):
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    return [call.args[1] for call in texts.call_args_list]
+
+
 def select_legal(app):
     dealt_kinds = {card.kind for card in app.session.draw_result.cards}
     option = next(option for option in app.session.draw_result.legal_placements if option.kind in dealt_kinds)
@@ -66,6 +72,22 @@ def test_cell_coordinates_round_trip(pos):
 ])
 def test_pixels_outside_board_are_not_cells(point):
     assert cell_at_pixel(point) is None
+
+
+def test_help_button_and_keyboard_toggle_overlay_without_changing_game(app, screen):
+    before = deepcopy((app.session.board, app.session.draw_result, app.session.player_pos))
+    click(app, HELP_RECT.center)
+    assert app.help_open
+    shown = labels(app, screen)
+    assert "FIELD GUIDE" in shown and "1  BUILD" in shown and "4  USE TOOLS" in shown
+    click(app, CARD_RECTS[0].center)
+    assert app.session.selected_index is None
+    assert deepcopy((app.session.board, app.session.draw_result, app.session.player_pos)) == before
+    key(app, pygame.K_h)
+    assert not app.help_open
+    key(app, pygame.K_h)
+    key(app, pygame.K_ESCAPE)
+    assert not app.help_open and app.running
 
 
 def test_card_hit_boxes_are_separate_from_map_and_toolbar():
@@ -316,13 +338,20 @@ def test_rendered_door_edges_match_rotated_model(app, screen, doors, turns):
         assert screen.get_at(point)[:3] == (TEAL if doors[(side - turns) % 4] else MUTED)
 
 
+def explorer_color(app):
+    sprite = app.renderer.objects["explorer"]
+    ink = sprite.get_at(sprite.get_rect().center)
+    assert ink.a >= 250
+    return pytest.approx(ink[:3], abs=255 - ink.a)
+
+
 def test_player_marker_moves_to_new_room_immediately(app, screen):
     old_pos = app.session.player_pos
     option = select_legal(app)
     click(app, cell_rect(option.pos).center)
     app.draw(screen)
-    assert screen.get_at(cell_rect(option.pos).center)[:3] == GOLD
-    assert screen.get_at(cell_rect(old_pos).center)[:3] != GOLD
+    assert screen.get_at(cell_rect(option.pos).center)[:3] == explorer_color(app)
+    assert screen.get_at(cell_rect(old_pos).center)[:3] != explorer_color(app)
 
 
 @pytest.mark.parametrize("code,direction", [
@@ -344,7 +373,7 @@ def test_walking_keys_resolve_entry_and_update_the_player_marker(app, screen, co
     assert session.board[pos[0]][pos[1]].event_resolved
     assert (session.draw_result, session.build_turn, session.rng.getstate()) == before
     app.draw(screen)
-    assert screen.get_at(cell_rect(pos).center)[:3] == GOLD
+    assert screen.get_at(cell_rect(pos).center)[:3] == explorer_color(app)
 
 
 def test_clicking_existing_adjacent_room_walks_without_repeated_rewards(app, screen):
@@ -372,14 +401,14 @@ def test_hud_shows_resources_event_message_and_actual_deltas(app, screen):
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
     labels = [call.args[1] for call in texts.call_args_list]
-    assert "HP 5 / 6" in labels and "Supplies 2 / 5" in labels
+    assert "HP" in labels and "5/6" in labels and "SUPPLIES" in labels and "2/5" in labels
     assert "You encountered a trap!" in labels and "HP -1" in labels
     assert any(label.startswith("LAST EVENT: Danger at ") for label in labels)
     key(app, pygame.K_n)
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
     labels = [call.args[1] for call in texts.call_args_list]
-    assert "HP 6 / 6" in labels and "Supplies 2 / 5" in labels
+    assert "HP" in labels and "6/6" in labels and "SUPPLIES" in labels and "2/5" in labels
     assert not any(label.startswith("LAST EVENT:") for label in labels)
 
 
@@ -389,7 +418,8 @@ def test_zero_hp_hud_and_capped_rewards_render_safely(app, screen):
     click(app, cell_rect(option.pos).center)
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
-    assert "HP 0 / 6" in [call.args[1] for call in texts.call_args_list]
+    labels = [call.args[1] for call in texts.call_args_list]
+    assert "HP" in labels and "0/6" in labels
     assert app.running and app.session.hp_depleted
     app.session = category_session("supply", resources=Resources(6, 6, 5, 5))
     option = select_legal(app)

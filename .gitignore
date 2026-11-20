@@ -10,5 +10,6 @@ venv/
 .idea/
 dist/
 build/
+previews/
 *.log
 .DS_Store

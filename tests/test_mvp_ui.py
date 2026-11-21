@@ -14,7 +14,9 @@ from engine.models import Tile
 from engine.mvp import GameStatus, MvpSession
 from engine.resources import Resources
 from ui.app import GameApp
-from ui.screens import (BOARD_RECT, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
+from ui.locales import ZH_TW, translate
+from ui.screens import (BOARD_RECT, CACHE_RECT, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
+                        GUIDE_NEXT_RECT, GUIDE_PREV_RECT, GUIDE_PAGES, LANGUAGE_RECT,
                         WINDOW_SIZE, GOLD, cell_rect, tool_message)
 
 
@@ -34,6 +36,25 @@ def app(screen):
 
 def key(app, code):
     app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=code))
+
+
+@pytest.mark.parametrize("use_mouse", [False, True])
+def test_barbed_chest_shows_cost_and_accepts_keyboard_or_mouse(screen, use_mouse):
+    app = GameApp(MvpSession(seed=0))
+    key(app, pygame.K_1)
+    click(app, cell_rect((2, 0)).center)
+    assert "Pay 1 HP for 2 Supplies, or leave it here." in labels(app, screen)
+    key(app, pygame.K_h)
+    key(app, pygame.K_e)
+    assert app.session.trapped_cache == 2
+    key(app, pygame.K_h)
+    if use_mouse:
+        click(app, CACHE_RECT.center)
+    else:
+        key(app, pygame.K_e)
+    assert app.event_feedback == app.session.current_event
+    assert "HP -1  |  Supplies +2" in labels(app, screen)
+    assert app.session.resources == Resources(4, 5, 4, 5)
 
 
 def click(app, pos):
@@ -61,6 +82,85 @@ def state(session):
                      session.activated_altars, session.current_event, session.status)), session.rng.getstate()
 
 
+def test_guide_pages_work_in_hall_and_game_and_block_gameplay_input(app, screen):
+    for lobby in (False, True):
+        app.in_lobby = lobby
+        before = state(app.session)
+        key(app, pygame.K_h)
+        assert GUIDE_PAGES[0][0] in labels(app, screen)
+        click(app, GUIDE_NEXT_RECT.center)
+        assert "BARBED CHEST" in labels(app, screen)
+        key(app, pygame.K_RIGHT)
+        key(app, pygame.K_RIGHT)
+        assert "LOOP REWARD" in labels(app, screen)
+        click(app, GUIDE_PREV_RECT.center)
+        assert app.help_page == 1
+        key(app, pygame.K_ESCAPE)
+        assert not app.help_open and state(app.session) == before
+
+
+def test_language_switch_preserves_game_and_translates_an_existing_event(app, screen):
+    key(app, pygame.K_1)
+    key(app, pygame.K_r)
+    click(app, cell_rect((2, 0)).center)
+    key(app, pygame.K_2)
+    key(app, pygame.K_r)
+    previous = state(app.session)
+    notice = app.session.current_event
+    click(app, LANGUAGE_RECT.center)
+    assert app.renderer.t(notice.message) == ZH_TW[notice.message]
+    assert pygame.display.get_caption()[0] == "地下城建築師"
+    assert app.event_feedback is notice
+    app.draw(screen)
+    key(app, pygame.K_h)
+    key(app, pygame.K_RIGHT)
+    key(app, pygame.K_F2)
+    assert app.renderer.language == "en" and app.help_page == 1
+    assert state(app.session) == previous
+
+
+def test_bundled_font_and_catalogue_cover_the_guide_and_events(app):
+    for title, entries in GUIDE_PAGES:
+        for english in [title, *(text for pair in entries for text in pair)]:
+            assert translate(english, "zh-TW") != english
+    config = app.session.event_config
+    events = [event for _, event in config.outcomes]
+    events.extend(event for _, variants in config.variants for event in variants)
+    assert all(event.message in ZH_TW for event in events)
+    font = app.renderer.chinese_fonts[2]
+    chars = {c for text in ZH_TW.values() for c in text if ord(c) > 127}
+    assert all(font.metrics(c)[0] is not None for c in chars)
+
+
+def test_connecting_and_visiting_a_well_through_game_controls(screen):
+    app = GameApp(MvpSession(seed=104, resources=Resources(4, 5, 2, 5)))
+    assert {"Vine spires", "Healing well"} <= set(labels(app, screen))
+    key(app, pygame.K_1)
+    key(app, pygame.K_r)
+    click(app, cell_rect((3, 1)).center)
+    assert not app.session.board[3][2].event_resolved
+    key(app, pygame.K_F2)
+    click(app, cell_rect((3, 2)).center)
+    assert app.event_feedback.category == "spring" and app.session.resources.hp == 5
+    assert app.renderer.t(app.event_feedback.message) == "你喝下了最後一口井水。"
+    app.draw(screen)
+
+
+def test_guide_example_previews_then_awards_a_loop_alongside_the_room_event(app, screen):
+    for index, turns, pos in ((0, 1, (2, 0)), (1, -1, (3, 1)), (0, 2, (2, 1))):
+        key(app, pygame.K_1 + index)
+        for _ in range(abs(turns)):
+            key(app, pygame.K_q if turns < 0 else pygame.K_r)
+        app.hovered_pos = pos
+        if pos == (2, 1):
+            assert any("Closes 1 new loop" in line for line in labels(app, screen))
+            assert app.session.loops_closed == 0
+        click(app, cell_rect(pos).center)
+    assert app.event_feedback == app.session.current_event
+    assert "Supplies -1  |  1 loop  (+1 supply)" in labels(app, screen)
+    assert app.session.loops_closed == 1
+
+
 def test_default_mvp_shows_fixed_objectives_tool_costs_and_core_lock(app, screen):
     shown = labels(app, screen)
     assert "A1" in shown and "A2" in shown and "C-" in shown
@@ -86,6 +186,7 @@ def test_special_rooms_show_their_initial_art(app, screen, pos, asset):
     app.draw(screen)
     sprite = pygame.image.load(Path(__file__).resolve().parents[1] / "assets" / "rooms" / f"{asset}-72.png")
     area = cell_rect(pos).move(-BOARD_RECT.x, -BOARD_RECT.y)
+    sprite = pygame.transform.scale(sprite, area.size)
     expected = app.renderer.board_floor.subsurface(area).convert(screen)
     expected.blit(sprite, (0, 0))
     center = pygame.Rect(22, 22, 28, 28)

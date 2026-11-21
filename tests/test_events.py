@@ -17,6 +17,9 @@ from tests.test_game import choose_legal, snapshot
 
 
 def category_session(category, *, resources=None, event_config=None):
+    # Pin the base outcome for tests of movement, caps and once-only entry.
+    if event_config is None:
+        event_config = replace(load_event_config(), variants=())
     config = load_card_config()
     config = replace(config, room_types=tuple(
         replace(room, event_weights=((category, 1),)) for room in config.room_types
@@ -30,7 +33,7 @@ def build(session):
     return option.pos
 
 
-@pytest.mark.parametrize("category,hp,supplies", [("supply", 6, 3), ("danger", 5, 2), ("neutral", 6, 2)])
+@pytest.mark.parametrize("category,hp,supplies", [("supply", 5, 3), ("danger", 4, 2), ("neutral", 5, 2)])
 def test_auto_entry_resolves_exactly_once_and_backtracking_is_free(category, hp, supplies):
     session = category_session(category)
     pos = build(session)
@@ -51,6 +54,15 @@ def test_auto_entry_resolves_exactly_once_and_backtracking_is_free(category, hp,
     assert (session.resources.hp, session.resources.supplies) == (hp, supplies)
     assert session.build_turn == 1
     assert (session.draw_result, session.selected_index, session.rotations, session.rng.getstate()) == hand
+
+
+def test_relic_event_restores_both_resources_with_limits():
+    session = category_session("relic", resources=Resources(4, 6, 2, 5))
+    pos = build(session)
+    assert (session.resources.hp, session.resources.supplies) == (5, 3)
+    assert session.current_event.category == "relic"
+    assert (session.current_event.hp_delta, session.current_event.supplies_delta) == (1, 1)
+    assert session.board[pos[0]][pos[1]].event_outcome == {"hp": 1, "supplies": 1}
 
 
 def test_preview_and_rotation_hide_outcomes_and_do_not_change_resources():
@@ -262,5 +274,15 @@ def test_loaded_config_and_pure_resolution_work_without_mutation():
     initial = Resources(6, 6, 2, 5)
     updated, notice = resolve_event("danger", (2, 0), initial, config)
     assert initial.hp == 6 and updated.hp == 5
-    assert notice.message == "You encountered a trap!"
+    assert notice.message == "A dart slips through a cracked mural."
     assert notice.hp_delta == -1 and notice.supplies_delta == 0
+
+
+def test_danger_variants_have_distinct_stories_and_resource_choices():
+    config = load_event_config()
+    initial = Resources(6, 6, 2, 5)
+    notices = [resolve_event("danger", (2, 0), initial, config, seed)[1] for seed in range(64)]
+    assert len({notice.message for notice in notices}) == 4
+    assert {(n.hp_delta, n.supplies_delta, n.trapped_cache) for n in notices} == {
+        (-1, 0, 0), (-2, 0, 0), (0, -1, 0), (0, 0, 2),
+    }

@@ -70,6 +70,8 @@ class BuildSession:
             return False, "invalid_source"
         if target is None:
             return False, "no_room"
+        if target.kind == "rubble":
+            return False, "rubble"
         if not source.doors[direction] or not target.doors[OPPOSITE[direction]]:
             return False, "doors_not_connected"
         if not target.can_traverse():
@@ -80,11 +82,36 @@ class BuildSession:
         """Prepare once-only event effects, leaving the live state untouched."""
         if tile.kind in {"start", "altar_a", "altar_b", "core"} or tile.event_resolved or tile.event_category is None:
             return tile, self.resources, None
-        resources, notification = resolve_event(tile.event_category, pos, self.resources, self.event_config)
-        resolved = replace(tile, event_resolved=True, event_outcome={
+        resources, notification = resolve_event(tile.event_category, pos, self.resources, self.event_config, self.seed)
+        resolved = replace(tile, event_resolved=True, trapped_cache=notification.trapped_cache, event_outcome={
             "hp": notification.hp_delta, "supplies": notification.supplies_delta,
         })
         return resolved, resources, notification
+
+    @property
+    def trapped_cache(self) -> int:
+        row, col = self.player_pos
+        tile = self.board[row][col]
+        return tile.trapped_cache if tile else 0
+
+    @property
+    def cache_gain(self) -> int:
+        updated = self.resources.apply(supplies_delta=self.trapped_cache)
+        return updated.supplies - self.resources.supplies
+
+    def open_trapped_cache(self) -> bool:
+        """Trade one HP for the supplies that fit. Unopened chests survive revisits."""
+        if self.resources.hp <= 1 or not self.trapped_cache or not self.cache_gain:
+            return False
+        row, col = self.player_pos
+        tile = self.board[row][col]
+        assert tile is not None and tile.event_category is not None
+        gain = self.cache_gain
+        self.resources = self.resources.apply(hp_delta=-1, supplies_delta=gain)
+        self.board[row][col] = replace(tile, trapped_cache=0)
+        self.current_event = EventNotification(self.player_pos, tile.event_category,
+                                               "Wire cuts your hand. The rations are yours.", -1, gain)
+        return True
 
     def move(self, pos: Position) -> tuple[bool, str]:
         """Walk one step. Preserve cards, rotations, build turns and random state."""

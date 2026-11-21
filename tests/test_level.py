@@ -27,6 +27,23 @@ def test_default_level_loads_provisional_positions_and_geometry():
     assert level.first_altar_supplies == 1
 
 
+def test_seeded_terrain_varies_and_preserves_potential_paths():
+    level = load_level_config()
+    layouts = set()
+    for seed in range(64):
+        board = level.make_board(seed)
+        terrain = [(tile.kind, (r, c)) for r, row in enumerate(board) for c, tile in enumerate(row)
+                   if tile and tile.kind in ("spring", "rubble")]
+        assert sorted(kind for kind, _ in terrain) == ["rubble", "rubble", "spring"]
+        before_unlock = level.potential_positions(board, core_locked=True)
+        assert all(altar.pos in before_unlock for altar in level.altars)
+        assert all(pos in before_unlock for kind, pos in terrain if kind == "spring")
+        assert level.core.pos in level.potential_positions(board, core_locked=False)
+        assert level.make_board(seed) == board
+        layouts.add(tuple(terrain))
+    assert len(layouts) > 1
+
+
 def test_make_board_initializes_only_special_rooms_and_creates_independent_tiles():
     level = load_level_config()
     first, second = level.make_board(), level.make_board()

@@ -12,10 +12,10 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 
 | 路徑 | 職責 |
 |---|---|
-| `main.py` | 解析 `--seed`（預設 42）、啟動與清理 pygame。匯入模組時不開視窗。 |
+| `main.py` | 解析 `--seed`（省略時隨機選取）、啟動與清理 pygame。匯入模組時不開視窗。 |
 | `engine/directions.py`、`engine/models.py` | 方位、旋轉、`Tile`、棋盤與通行狀態。 |
 | `engine/placement.py` | BFS 可達性、候選空格與嚴格拼接。 |
-| `engine/cards.py` | 設定驗證、合法放置枚舉、加權抽卡及事件類別預覽。 |
+| `engine/cards.py` | 設定驗證、合法放置枚舉、加權抽卡及隱藏事件抽選。 |
 | `engine/game.py` | 保留 `BuildSession` 的 Phase 4 建造與事件控制器，供 MVP 擴充及既有測試重用。 |
 | `engine/mvp.py` | `MvpSession(BuildSession)` 串接固定關卡、目標、工具、勝負、原子操作與重開。 |
 | `engine/level.py` | 不可變關卡設定、固定房門向與潛在連通驗證。 |
@@ -58,13 +58,13 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 
 ### 5.4 移動與首次進房事件
 
-`movement_preview(pos)` 回傳 `(ok, reason)`，確認目標相鄰、在地圖內、兩側有門且可通行，不改狀態。`move(pos)` 再驗證並移動一格；只在首次進入普通事件房時更新該房間的 `event_resolved`、`event_outcome`、資源與 `current_event`。起點、祭壇與核心不套用普通事件。移動不換牌、不旋轉、不增加建造回合、不使用亂數。
+`movement_preview(pos)` 回傳 `(ok, reason)`，確認目標相鄰、在地圖內、兩側有門且可通行，不改狀態。`move(pos)` 再驗證並移動一格；只在首次進入普通事件房時更新該房間的 `event_resolved`、`event_outcome`、資源與 `current_event`。起點、祭壇與核心不套用普通事件。普通移動保留手牌、旋轉方向、建造回合與抽牌亂數狀態。
 
 `place` 沿用 Phase 3 自動進房，與 `move` 共用 `_prepare_entry`，避免放置與進房各發一次獎勵。`Tile.event_outcome` 記錄套用上下限後的實際 `hp`／`supplies` 變化；已滿而增加 0 也會標記結算。`current_event` 保留最後一次新事件，重訪與無效操作不更新，重開清除。
 
-`EventConfig.from_mapping(data)` 讀取 `events.categories` 與 `events.outcomes`；每類效果可設 `message`、整數 `hp_delta` 及 `supplies_delta`。預設沿用 supply／danger／neutral。自訂類別必須同時提供卡片權重與效果。`resolve_event(category, pos, resources, config)` 是純函式，回傳新的資源快照及 `EventNotification(pos, category, message, hp_delta, supplies_delta)`，不改棋盤。
+`EventConfig.from_mapping(data)` 讀取 `events.categories` 與 `events.outcomes`。每類事件可設基本效果與一組 `variants`，各項可指定 `message`、整數 `hp_delta`、`supplies_delta` 與非負整數 `trapped_cache`。`resolve_event(category, pos, resources, config, seed)` 以局種子、座標與類別建立獨立亂數來源，從基本效果與各變體中等機率選取一項，並回傳資源快照與通知。省略 seed 時使用基本效果。首次進房後，`Tile.trapped_cache` 保存未開箱的補給數量，成功開箱後歸零。開箱產生獨立的事件通知。
 
-房型對類別的機率仍由 Phase 2 的 `weights_by_kind` 與 session RNG 決定；事件目前直接套用每類設定的效果，不另外抽亂數。因此固定 seed 與相同操作重現相同事件，且不改變既有牌序。預覽不產生或結算確切效果。
+房型對類別的機率由 `weights_by_kind` 與 session RNG 決定；事件目前直接套用每類設定的效果，不另外抽亂數。因此固定 seed 與相同操作重現相同事件，且不改變既有牌序。卡面只呈現房型傾向，不公開已抽定的精確類別；預覽不會重新抽取或結算效果。
 
 ### 5.5 HP 與 Supplies API
 

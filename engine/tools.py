@@ -96,6 +96,8 @@ def chisel_preview(board: Board, source: Position, target: Position,
     target_tile = board[target[0]][target[1]]
     if source_tile is None or target_tile is None:
         return False, "no_room"
+    if target_tile.kind == "rubble" or source_tile.kind == "rubble":
+        return False, "rubble"
     if (source_tile.special_state == "locked" or target_tile.special_state == "locked"
             or not source_tile.can_traverse() or not target_tile.can_traverse()):
         return False, "room_locked"

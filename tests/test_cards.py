@@ -69,7 +69,13 @@ def test_default_config_loads_existing_provisional_settings(config):
     rooms = {room.kind: room for room in config.room_types}
     assert set(rooms) == {"dead_end", "straight", "corner", "t_junction", "cross"}
     assert rooms["straight"].weight == 3
-    assert dict(rooms["cross"].event_weights) == {"supply": 3, "danger": 3, "neutral": 4}
+    assert {kind: dict(room.event_weights) for kind, room in rooms.items()} == {
+        "dead_end": {"danger": 1, "neutral": 2, "relic": 0, "supply": 7},
+        "straight": {"danger": 1, "neutral": 8, "relic": 0, "supply": 1},
+        "corner": {"danger": 1, "neutral": 6, "relic": 0, "supply": 3},
+        "t_junction": {"danger": 4, "neutral": 2, "relic": 0, "supply": 4},
+        "cross": {"danger": 3, "neutral": 2, "relic": 3, "supply": 2},
+    }
     assert config.boost_second_legal_weight == 2
 
 
@@ -340,8 +346,12 @@ print(json.dumps(asdict(draw_cards(board, (3,3), rng=Random(42))), sort_keys=Tru
 
 
 def test_preview_categories_follow_config_without_resolving_events(raw_config, open_board):
-    raw_config["events"]["weights_by_kind"]["cross"] = {"danger": 1, "supply": 0, "neutral": 0}
-    raw_config["events"]["weights_by_kind"]["dead_end"] = {"danger": 0, "supply": 1, "neutral": 0}
+    raw_config["events"]["weights_by_kind"]["cross"] = {
+        "danger": 1, "supply": 0, "neutral": 0, "relic": 0,
+    }
+    raw_config["events"]["weights_by_kind"]["dead_end"] = {
+        "danger": 0, "supply": 1, "neutral": 0, "relic": 0,
+    }
     settings = CardConfig.from_mapping(raw_config)
     settings = replace(settings, room_types=tuple(room for room in settings.room_types if room.kind in {"cross", "dead_end"}))
     seen = set()

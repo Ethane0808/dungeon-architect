@@ -97,6 +97,26 @@ def reachable_rooms(
     return visited
 
 
+def loops_closed_by_room(board: Board, pos: tuple[int, int], doors: tuple[bool, ...]) -> int:
+    """Count new independent routes when filling an empty cell on the old board."""
+    neighbors = set()
+    for side in DIRECTIONS:
+        r, c = neighbor_pos(*pos, side)
+        if doors[side] and is_in_bounds(r, c, BOARD_SIZE):
+            tile = board[r][c]
+            if tile and tile.can_traverse() and tile.doors[OPPOSITE[side]]:
+                neighbors.add((r, c))
+
+    # The first entrance to each old component joins it. Each extra entrance closes a loop.
+    loops = 0
+    while len(neighbors) > 1:
+        component = reachable_rooms(board, next(iter(neighbors)))
+        entrances = neighbors & component
+        loops += len(entrances) - 1
+        neighbors -= entrances
+    return loops
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # frontier_cells
 # ─────────────────────────────────────────────────────────────────────────────

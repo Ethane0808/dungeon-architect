@@ -51,7 +51,7 @@ def test_demo_command_is_headless_and_reports_real_game_result():
                             cwd=Path(__file__).resolve().parents[1], env=os.environ.copy(),
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    assert "WON: 11 builds; HP 5/6; Supplies 5/5; altars 2/2" in result.stdout
+    assert "WON: 11 builds; HP 5/5; Supplies 5/5; altars 2/2" in result.stdout
 
 
 def test_recorded_default_win_works_through_pygame_inputs(monkeypatch):

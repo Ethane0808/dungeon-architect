@@ -6,10 +6,10 @@ from dataclasses import replace
 import pytest
 
 from engine.cards import draw_cards, load_card_config
-from engine.level import LevelConfig, SpecialRoom
-from engine.models import Tile
+from engine.level import LevelConfig, SpecialRoom, load_level_config
+from engine.models import Tile, make_empty_board
 from engine.mvp import GameStatus, MvpSession
-from engine.placement import reachable_rooms
+from engine.placement import loops_closed_by_room, reachable_rooms
 from engine.resources import Resources
 from engine.tools import ToolConfig, ToolRule
 
@@ -34,7 +34,87 @@ def game_snapshot(session):
                      session.build_turn, session.selected_index, session.rotations,
                      session.resources, session.current_event, session.activated_altars,
                      session.status, session.loss_reason, session.objective_message,
-                     session.tool_uses)), session.rng.getstate()
+                     session.tool_uses, session.loops_closed)), session.rng.getstate()
+
+
+@pytest.mark.parametrize("seal", [False, True])
+def test_three_connected_exits_close_two_loops_after_tool_cost(seal):
+    level = replace(load_level_config(), rubble_count=0, spring_count=0)
+    game = MvpSession(config=cross_config(), resources=Resources(6, 6, 5, 5), level=level)
+    for pos in ((3, 1), (2, 1), (2, 2), (2, 3), (3, 3)):
+        game.select_card(0)
+        assert game.place(pos)[0]
+    assert game.loops_closed == 0
+    game.select_card(0)
+    pos = (3, 2)
+    if seal:
+        assert game.place_with_seal(pos, 2)[0]
+    else:
+        assert game.place(pos)[0]
+    assert game.current_event.category == "neutral"
+    assert game.current_event.loops_closed == game.loops_closed == 2
+    assert game.current_event.loop_supplies == int(seal)
+    assert game.resources.supplies == 5
+    for dest in ((2, 2), (2, 1), (3, 1), pos):
+        assert game.move(dest)[0]
+    assert game.loops_closed == 2
+    game.restart()
+    assert game.loops_closed == 0 and game.current_event is None
+
+
+def test_chiseling_a_shared_wall_rewards_only_the_new_shortcut():
+    level = replace(load_level_config(), rubble_count=0, spring_count=0)
+    game = MvpSession(config=cross_config(), resources=Resources(6, 6, 5, 5), level=level)
+    game.select_card(0)
+    assert game.place_with_seal((3, 1), 1)[0]
+    for pos in ((2, 1), (2, 2)):
+        game.select_card(0)
+        assert game.place(pos)[0]
+    game.select_card(0)
+    assert game.place_with_seal((3, 2), 3)[0]
+    assert game.loops_closed == 0 and game.resources.supplies == 3
+    assert game.chisel((3, 2), (3, 1))[0]
+    assert game.loops_closed == game.current_event.loop_supplies == 1
+    assert game.resources.supplies == 2
+    before = game_snapshot(game)
+    assert not game.chisel((3, 2), (3, 1))[0]
+    assert game_snapshot(game) == before
+
+
+def test_two_exits_need_an_existing_walkable_route_to_close_a_loop():
+    board = make_empty_board()
+    pos = (3, 3)
+    doors = (True, False, False, True)
+    board[2][3] = Tile("corner", (False, False, True, True))
+    board[3][2] = Tile("corner", (True, True, False, False))
+    assert loops_closed_by_room(board, pos, doors) == 0
+    board[2][2] = Tile("core", (False, True, True, False), special_state="locked")
+    assert loops_closed_by_room(board, pos, doors) == 0
+    board[2][2].special_state = "unlocked"
+    assert loops_closed_by_room(board, pos, doors) == 1
+
+
+@pytest.mark.parametrize("hp,supplies,gain", [(6, 2, 2), (2, 4, 1), (1, 2, 0), (6, 5, 0)])
+def test_trapped_cache_can_be_left_and_opened_once_if_affordable(hp, supplies, gain):
+    game = MvpSession(seed=0, resources=Resources(hp, 6, supplies, 5))
+    game.select_card(0)
+    assert game.place((2, 0))[0] and game.trapped_cache == 2
+    assert game.resources == game.initial_resources
+    hand, rng, turn = game.draw_result.cards, game.rng.getstate(), game.build_turn
+    assert game.move(game.level.start.pos)[0]
+    assert not game.open_trapped_cache()
+    assert game.move((2, 0))[0]
+    notice = game.current_event
+    assert game.open_trapped_cache() == bool(gain)
+    if gain:
+        assert game.current_event.hp_delta == -1 and game.current_event.supplies_delta == gain
+        assert game.resources == Resources(hp - 1, 6, supplies + gain, 5)
+        assert game.move(game.level.start.pos)[0] and game.move((2, 0))[0]
+        assert game.trapped_cache == 0 and not game.open_trapped_cache()
+    else:
+        assert game.resources == game.initial_resources and game.trapped_cache == 2
+        assert game.current_event == notice
+    assert (game.draw_result.cards, game.rng.getstate(), game.build_turn) == (hand, rng, turn)
 
 
 @pytest.fixture
@@ -61,12 +141,47 @@ def test_default_game_starts_with_visible_reserved_objectives_and_protected_hand
     assert game.status == GameStatus.PLAYING and not game.core_unlocked
     assert game.activated_altars == frozenset()
     assert len(game.level.altars) == 2
-    assert sum(room is not None for row in game.board for room in row) == 4
+    assert sorted(room.kind for row in game.board for room in row if room) == [
+        "altar_a", "altar_b", "core", "rubble", "rubble", "spring", "start",
+    ]
     assert len(game.draw_result.cards) == 3 and game.draw_result.legal_card_indices
     assert game.player_pos == game.level.start.pos
     assert game.board[3][6].special_state == "locked"
-    assert game.resources == Resources(6, 6, 2, 5)
+    assert game.resources == Resources(5, 5, 2, 5)
     assert game.current_event is None and not any(game.tool_uses.values())
+
+
+@pytest.mark.parametrize("hp", [3, 5])
+def test_healing_well_activates_only_on_first_entry(hp):
+    game = MvpSession(seed=104, resources=Resources(hp, 5, 2, 5))
+    game.select_card(0)
+    game.rotate_selected()
+    assert game.place((3, 1))[0]
+    assert game.board[3][2].kind == "spring" and not game.board[3][2].event_resolved
+    assert game.move((3, 2))[0]
+    assert game.resources.hp == min(hp + 1, 5)
+    assert game.current_event.category == "spring" and game.current_event.hp_delta == min(1, 5 - hp)
+    assert game.board[3][2].event_resolved
+    game.resources = game.resources.apply(hp_delta=-1)
+    before = game.resources
+    assert game.move((3, 1))[0] and game.move((3, 2))[0]
+    assert game.resources == before
+    game.restart()
+    assert not game.board[3][2].event_resolved
+
+
+def test_rubble_blocks_build_walk_and_chisel_without_cost():
+    game = MvpSession(seed=18)
+    game.select_card(0)
+    game.rotate_selected(2)
+    assert game.place((3, 1))[0]
+    game.select_card(0)
+    before = game_snapshot(game)
+    assert game.board[3][2].kind == "rubble"
+    assert (3, 2) not in game.legal_cells() and not game.place((3, 2))[0]
+    assert game.move((3, 2)) == (False, "rubble")
+    assert game.chisel((3, 1), (3, 2)) == (False, "rubble")
+    assert game_snapshot(game) == before
 
 
 @pytest.mark.parametrize("order", [((2, 2), (4, 2)), ((4, 2), (2, 2))])
@@ -252,12 +367,13 @@ def test_chisel_updates_connectivity_without_entering_or_triggering_events(game)
     assert game.chisel((3, 0), (2, 0)) == (True, "ok")
     assert (2, 0) in reachable_rooms(game.board, game.player_pos)
     assert not game.board[2][0].event_resolved and game.current_event is None
+    assert game.loops_closed == 0
     assert game.player_pos == (3, 0) and game.resources.supplies == 0
     assert game.tool_uses["emergency_chisel"] == 1
     assert (game.draw_result.cards, game.rotations, game.rng.getstate()) == (hand, rotations, rng)
-    assert game.move((2, 0))[0] and game.resources.supplies == 1
+    assert game.move((2, 0))[0] and game.resources.supplies == 2
     assert game.move((3, 0))[0] and game.move((2, 0))[0]
-    assert game.resources.supplies == 1
+    assert game.resources.supplies == 2
 
 
 def test_chisel_connects_an_altar_but_only_walking_into_it_activates_it(game):
@@ -292,7 +408,7 @@ def test_blocked_construction_can_recover_with_chisel_and_protected_new_hand(gam
     assert game.status == GameStatus.PLAYING and not game.blocked
     assert len(game.draw_result.cards) == 3 and game.draw_result.legal_card_indices
     assert game.resources.supplies == 0 and not game.board[2][1].event_resolved
-    assert game.move((2, 1))[0] and game.resources.supplies == 1
+    assert game.move((2, 1))[0] and game.resources.supplies == 2
 
 
 def test_blocked_without_affordable_tools_still_allows_free_walking(game):

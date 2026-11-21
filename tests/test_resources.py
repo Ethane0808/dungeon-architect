@@ -8,7 +8,7 @@ from engine.resources import Resources, load_resources
 
 
 def test_provisional_initial_resources_are_loaded_from_existing_config():
-    assert load_resources() == Resources(hp=6, hp_max=6, supplies=2, supplies_max=5)
+    assert load_resources() == Resources(hp=5, hp_max=5, supplies=2, supplies_max=5)
 
 
 def test_damage_and_recovery_return_new_bounded_states():

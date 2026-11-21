@@ -13,10 +13,11 @@ from engine.directions import DIRECTIONS, OPPOSITE, neighbor_pos, rotate_doors
 from engine.models import Tile, make_empty_board
 from engine.resources import Resources
 from tests.test_events import category_session
-from ui.app import GameApp
+from ui.app import GameApp, display_viewport
 from ui.screens import (
-    BOARD_RECT, CARD_RECTS, HELP_RECT, RESTART_RECT, ROTATE_RECT, WINDOW_SIZE, MUTED, TEAL,
-    card_at_pixel, cell_at_pixel, cell_rect, placement_message,
+    BOARD_RECT, CARD_RECTS, EVENT_FEEDBACK_MS, HELP_RECT, HP_RECT, RESTART_RECT, ROOM_TRAITS,
+    ROTATE_RECT, SUPPLIES_RECT, WINDOW_SIZE, MUTED, TEAL, card_at_pixel, cell_at_pixel,
+    cell_rect, placement_message, ENTER_RECT, GUIDE_RECT, GUIDE_CLOSE_RECT,
 )
 
 
@@ -90,11 +91,110 @@ def test_help_button_and_keyboard_toggle_overlay_without_changing_game(app, scre
     assert not app.help_open and app.running
 
 
+def test_f11_toggles_fullscreen_without_changing_game(app, screen):
+    before = deepcopy((app.session.board, app.session.draw_result, app.session.player_pos))
+    fullscreen_surface = pygame.Surface((1920, 1080))
+    window_surface = pygame.Surface(WINDOW_SIZE)
+    app.display_surface = screen
+    with patch.object(pygame.display, "set_mode",
+                      side_effect=(fullscreen_surface, window_surface)) as set_mode:
+        key(app, pygame.K_F11)
+        assert app.fullscreen and app.display_surface is fullscreen_surface
+        set_mode.assert_called_with((0, 0), pygame.FULLSCREEN)
+        key(app, pygame.K_F11)
+        assert not app.fullscreen and app.display_surface is window_surface
+        assert set_mode.call_args_list[-1].args == (WINDOW_SIZE, 0)
+    assert deepcopy((app.session.board, app.session.draw_result, app.session.player_pos)) == before
+
+
+def test_lobby_scaled_clicks_guide_and_resume(app):
+    app.open_lobby()
+    app.display_surface = pygame.Surface((1920, 1080))
+    view = display_viewport(app.display_surface.get_size())
+
+    def click_control(rect):
+        click(app, (view.x + rect.centerx * view.w // WINDOW_SIZE[0],
+                    view.y + rect.centery * view.h // WINDOW_SIZE[1]))
+
+    click_control(GUIDE_RECT)
+    assert app.help_open
+    click_control(ENTER_RECT)
+    assert app.in_lobby and app.help_open
+    click_control(GUIDE_CLOSE_RECT)
+    click_control(ENTER_RECT)
+    assert not app.in_lobby
+    key(app, pygame.K_1)
+    key(app, pygame.K_l)
+    key(app, pygame.K_n)
+    key(app, pygame.K_2)
+    key(app, pygame.K_RETURN)
+    assert not app.in_lobby and app.session.selected_index == 0
+
+
+def test_scaled_display_preserves_aspect_ratio_and_maps_pointer(app):
+    app.display_surface = pygame.Surface((1920, 1080))
+    viewport = display_viewport(app.display_surface.get_size())
+    assert abs(viewport.centerx - 960) <= 1 and abs(viewport.centery - 540) <= 1
+    assert viewport.width / viewport.height == pytest.approx(WINDOW_SIZE[0] / WINDOW_SIZE[1], rel=0.001)
+
+    logical = HELP_RECT.center
+    display_pos = (viewport.left + logical[0] * viewport.width // WINDOW_SIZE[0],
+                   viewport.top + logical[1] * viewport.height // WINDOW_SIZE[1])
+    click(app, display_pos)
+    assert app.help_open
+    click(app, (0, 0))
+    assert app.help_open  # Letterbox clicks do nothing.
+
+
+def test_scaled_draw_fills_only_centered_viewport(app):
+    display = pygame.Surface((1920, 1080))
+    app.draw(display)
+    viewport = display_viewport(display.get_size())
+    assert display.get_at((0, 0))[:3] == (4, 8, 14)
+    assert display.get_at(viewport.center)[:3] != (4, 8, 14)
+
+
 def test_card_hit_boxes_are_separate_from_map_and_toolbar():
     for index, rect in enumerate(CARD_RECTS):
         assert card_at_pixel(rect.center) == index
     assert card_at_pixel(BOARD_RECT.center) is None
     assert card_at_pixel(ROTATE_RECT.center) is None
+
+
+def test_cards_show_room_tendencies_without_revealing_hidden_event(app, screen):
+    shown = labels(app, screen)
+    for card in app.session.draw_result.cards:
+        assert ROOM_TRAITS[card.kind][0] in shown
+        assert card.event_category.title() + " preview" not in shown
+
+
+def test_resource_hud_uses_heart_and_chest_icons(app, screen):
+    app.draw(screen)
+    for name in ("health", "supply"):
+        source = app.renderer.objects[name].get_bounding_rect()
+        visible = app.renderer.status_icons[name].get_bounding_rect()
+        assert visible.width == 22
+        assert abs(visible.height - visible.width * source.height / source.width) <= 1
+    chip_fill = (25, 38, 57)
+    assert screen.get_at((HP_RECT.left + 15, HP_RECT.centery))[:3] != chip_fill
+    assert screen.get_at((SUPPLIES_RECT.left + 15, SUPPLIES_RECT.centery))[:3] != chip_fill
+
+
+def test_event_feedback_shows_actual_resource_icons_and_expires(app, screen, monkeypatch):
+    now = 1_000
+    monkeypatch.setattr(pygame.time, "get_ticks", lambda: now)
+    app.session = category_session("relic", resources=Resources(4, 6, 2, 5))
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    assert app.event_feedback.category == "relic"
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    shown = [call.args[1] for call in texts.call_args_list]
+    assert "+1 HP" in shown and "+1 Supplies" in shown
+
+    now += EVENT_FEEDBACK_MS
+    app.draw(screen)
+    assert app.event_feedback is None
 
 
 def test_selection_rotation_and_rendering_preserve_hand_and_board(app, screen):
@@ -209,16 +309,59 @@ def test_main_seed_argument_and_quit_cleanup(monkeypatch):
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
     monkeypatch.setattr(pygame.event, "get", lambda: [pygame.event.Event(pygame.QUIT)])
     sessions = []
+    modes = []
     real_app = main.GameApp
 
-    def capture_app(session):
+    def capture_app(session, *, fullscreen=False):
         sessions.append(session)
-        return real_app(session)
+        modes.append(fullscreen)
+        return real_app(session, fullscreen=fullscreen)
 
     monkeypatch.setattr(main, "GameApp", capture_app)
     main.main(["--seed", "123"])
     assert sessions[0].seed == 123
+    assert modes == [False]
     assert not pygame.get_init()
+
+
+def test_main_can_start_fullscreen(monkeypatch):
+    import main
+
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    monkeypatch.setattr(pygame.event, "get", lambda: [pygame.event.Event(pygame.QUIT)])
+    modes = []
+    real_app = main.GameApp
+
+    def capture_app(session, *, fullscreen=False):
+        modes.append(fullscreen)
+        return real_app(session, fullscreen=fullscreen)
+
+    monkeypatch.setattr(main, "GameApp", capture_app)
+    main.main(["--fullscreen"])
+    assert modes == [True]
+    assert not pygame.get_init()
+
+
+def test_main_remembers_language_on_next_launch(monkeypatch, tmp_path):
+    import main
+
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    monkeypatch.setattr(pygame.system, "get_pref_path", lambda *args: str(tmp_path))
+    started_in = []
+
+    def visit_hall(app, screen):
+        assert app.in_lobby
+        started_in.append(app.renderer.language)
+        app.draw(screen)
+        key(app, pygame.K_F2)
+
+    monkeypatch.setattr(GameApp, "run", visit_hall)
+    main.main([])
+    main.main([])
+    assert started_in == ["en", "zh-TW"]
+    assert (tmp_path / "language.txt").read_text(encoding="utf-8") == "en"
 
 
 def test_main_cleans_up_after_application_failure(monkeypatch):
@@ -401,14 +544,14 @@ def test_hud_shows_resources_event_message_and_actual_deltas(app, screen):
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
     labels = [call.args[1] for call in texts.call_args_list]
-    assert "HP" in labels and "5/6" in labels and "SUPPLIES" in labels and "2/5" in labels
-    assert "You encountered a trap!" in labels and "HP -1" in labels
+    assert "HP" in labels and "4/5" in labels and "SUPPLIES" in labels and "2/5" in labels
+    assert "A dart slips through a cracked mural." in labels and "HP -1" in labels
     assert any(label.startswith("LAST EVENT: Danger at ") for label in labels)
     key(app, pygame.K_n)
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
     labels = [call.args[1] for call in texts.call_args_list]
-    assert "HP" in labels and "6/6" in labels and "SUPPLIES" in labels and "2/5" in labels
+    assert "HP" in labels and "5/5" in labels and "SUPPLIES" in labels and "2/5" in labels
     assert not any(label.startswith("LAST EVENT:") for label in labels)
 
 

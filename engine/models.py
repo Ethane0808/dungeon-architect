@@ -23,7 +23,7 @@ class Tile:
     doors : (N, E, S, W) 各方向是否有門
     kind  : 房型字串，例如 'dead_end', 'straight', 'corner', 't_junction', 'cross',
             或特殊房 'start', 'altar_a', 'altar_b', 'core'
-    event_category : None | 'supply' | 'danger' | 'neutral'
+    event_category : None | 'supply' | 'danger' | 'neutral' | 'relic'
     event_outcome  : 首次進房後的實際資源變化，例如 {'hp': -1, 'supplies': 0}
     event_resolved : 是否已觸發過（首次進入後設為 True）
     special_state  : None | 'locked' | 'unlocked' | 'activated'
@@ -36,6 +36,7 @@ class Tile:
     event_outcome: Optional[dict] = None
     event_resolved: bool = False
     special_state: Optional[str] = None
+    trapped_cache: int = 0
 
     def can_traverse(self) -> bool:
         """
@@ -45,7 +46,7 @@ class Tile:
         核心房間（locked）：在解鎖前不可進入（GAME_DESIGN §3.4 / GOAL-03）。
         其他特殊房間：可通行（祭壇可進入後觸發啟動）。
         """
-        if self.kind == "core" and self.special_state == "locked":
+        if self.kind == "rubble" or (self.kind == "core" and self.special_state == "locked"):
             return False
         return True
 

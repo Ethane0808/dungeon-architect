@@ -1,14 +1,14 @@
 """Configurable first-entry outcomes and notifications, independent of pygame.
 
 The card system already samples geometry-dependent categories using the session
-seed. This module resolves that category's configured outcome only on entry;
-it consumes no randomness and cannot reroll cards or preview outcomes.
+seed. First entry samples a variant using a separate, location-specific seed.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from random import Random
 
 from engine.cards import DEFAULT_CONFIG_PATH, Position
 from engine.resources import Resources, _integer
@@ -21,12 +21,21 @@ class EventOutcome:
     message: str
     hp_delta: int = 0
     supplies_delta: int = 0
+    trapped_cache: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.message, str) or not self.message.strip():
             raise ValueError("Event message must be a nonempty string")
         _integer(self.hp_delta, "hp_delta")
         _integer(self.supplies_delta, "supplies_delta")
+        if _integer(self.trapped_cache, "trapped_cache") < 0:
+            raise ValueError("Trapped cache contents cannot be negative")
+
+    @classmethod
+    def from_mapping(cls, effect: Mapping, category: str) -> "EventOutcome":
+        fields = {k: v for k, v in effect.items() if not k.startswith("_")}
+        fields.setdefault("message", f"You explored a {category} room.")
+        return cls(**fields)
 
 
 @dataclass(frozen=True)
@@ -38,11 +47,15 @@ class EventNotification:
     message: str
     hp_delta: int
     supplies_delta: int
+    trapped_cache: int = 0
+    loops_closed: int = 0
+    loop_supplies: int = 0
 
 
 @dataclass(frozen=True)
 class EventConfig:
     outcomes: tuple[tuple[str, EventOutcome], ...]
+    variants: tuple[tuple[str, tuple[EventOutcome, ...]], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.outcomes, tuple) or not self.outcomes:
@@ -79,20 +92,20 @@ class EventConfig:
             if {name for name in definitions if not name.startswith("_")} != set(categories):
                 raise ValueError("Event outcomes must match configured categories")
             outcomes = []
+            variants = []
             for category in sorted(categories):
                 effect = definitions[category]
                 if not isinstance(effect, Mapping):
                     raise ValueError("Each event outcome must be an object")
-                unknown = {key for key in effect if not key.startswith("_")} - {
-                    "message", "hp_delta", "supplies_delta"
-                }
-                if unknown:
-                    raise ValueError(f"Unknown event effect fields: {sorted(unknown)}")
-                outcomes.append((category, EventOutcome(
-                    message=effect.get("message", f"You explored a {category} room."),
-                    hp_delta=effect.get("hp_delta", 0), supplies_delta=effect.get("supplies_delta", 0),
-                )))
-            return cls(tuple(outcomes))
+                effect = dict(effect)
+                alternatives = effect.pop("variants", [])
+                if not isinstance(alternatives, list):
+                    raise ValueError("Event variants must be a list of effects")
+                base = EventOutcome.from_mapping(effect, category)
+                outcomes.append((category, base))
+                if alternatives:
+                    variants.append((category, tuple(EventOutcome.from_mapping(v, category) for v in alternatives)))
+            return cls(tuple(outcomes), tuple(variants))
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError(f"Invalid event configuration: {error}") from error
 
@@ -103,9 +116,15 @@ def load_event_config(path: str | Path = DEFAULT_CONFIG_PATH) -> EventConfig:
 
 
 def resolve_event(category: str, pos: Position, resources: Resources,
-                  config: EventConfig) -> tuple[Resources, EventNotification]:
+                  config: EventConfig, seed: int | None = None) -> tuple[Resources, EventNotification]:
     """Prepare bounded resources and a notification without mutating game state."""
     outcome = config.outcome_for(category)
+    if seed is not None:
+        alternatives = dict(config.variants).get(category)
+        if alternatives:
+            rng = Random(f"{seed}:{pos[0]}:{pos[1]}:{category}")
+            outcome = rng.choice((outcome, *alternatives))
     updated = resources.apply(hp_delta=outcome.hp_delta, supplies_delta=outcome.supplies_delta)
     return updated, EventNotification(pos, category, outcome.message,
-                                      updated.hp - resources.hp, updated.supplies - resources.supplies)
+                                      updated.hp - resources.hp, updated.supplies - resources.supplies,
+                                      outcome.trapped_cache)

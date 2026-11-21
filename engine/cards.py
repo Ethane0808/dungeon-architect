@@ -1,6 +1,6 @@
 """Pure Python legal-placement enumeration and protected three-card draws.
 
-Only event-category previews are generated here. Event resolution, placement
+Hidden event categories are generated here. Event resolution, placement
 commits, resources, recovery tools and game-over decisions live outside this module.
 """
 
@@ -71,7 +71,7 @@ class RoomType:
 
 @dataclass(frozen=True)
 class CardConfig:
-    """Validated snapshot of the provisional room and preview settings."""
+    """Validated snapshot of the provisional room and hidden-event settings."""
 
     room_types: tuple[RoomType, ...]
     boost_second_legal_weight: float = 2.0
@@ -134,7 +134,7 @@ def load_card_config(path: str | Path = DEFAULT_CONFIG_PATH) -> CardConfig:
 
 @dataclass(frozen=True)
 class Card:
-    """Immutable shape and stable broad event preview; no event is executed."""
+    """Immutable shape and stable hidden event category; no event is executed."""
 
     kind: str
     doors: Doors

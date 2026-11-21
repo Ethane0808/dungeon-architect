@@ -14,8 +14,9 @@ from engine.cards import CardConfig, Position, draw_cards, enumerate_legal_place
 from engine.events import EventConfig, EventNotification
 from engine.game import BuildSession
 from engine.level import LevelConfig, load_level_config
-from engine.models import Tile
-from engine.placement import can_place, frontier_cells, reachable_rooms
+from engine.models import Board, Tile
+from engine.messages import Message
+from engine.placement import can_place, frontier_cells, loops_closed_by_room, reachable_rooms
 from engine.resources import Resources
 from engine.tools import ToolConfig, chisel_board, chisel_preview, load_tool_config, seal_card
 
@@ -36,11 +37,11 @@ class MvpSession(BuildSession):
         self.tools = load_tool_config() if tools is None else tools
         super().__init__(seed, config, resources=resources, event_config=event_config)
         special_ids = {room.kind for room in (self.level.start, *self.level.altars, self.level.core)}
-        if special_ids.intersection(room.kind for room in self.config.room_types):
+        if (special_ids | {"rubble", "spring"}).intersection(room.kind for room in self.config.room_types):
             raise ValueError("Ordinary card kinds cannot overlap level special-room ids")
 
     def restart(self) -> None:
-        board = self.level.make_board()
+        board = self.level.make_board(self.seed)
         rng = Random(self.seed)
         draw = draw_cards(board, self.level.start.pos, rng=rng, config=self.config)
         self.board = board
@@ -52,6 +53,7 @@ class MvpSession(BuildSession):
         self.rotations = [0] * len(draw.cards)
         self.resources = self.initial_resources
         self.current_event = None
+        self.loops_closed = 0
         self.activated_altars: frozenset[str] = frozenset()
         self.tool_uses = {"door_seal": 0, "emergency_chisel": 0}
         self.status = GameStatus.LOST if self.resources.hp_depleted else GameStatus.PLAYING
@@ -67,6 +69,9 @@ class MvpSession(BuildSession):
 
     def rotate_selected(self, times: int = 1) -> bool:
         return self.status == GameStatus.PLAYING and super().rotate_selected(times)
+
+    def open_trapped_cache(self) -> bool:
+        return self.status == GameStatus.PLAYING and super().open_trapped_cache()
 
     def preview(self, pos: Position) -> tuple[bool, str]:
         if self.status != GameStatus.PLAYING:
@@ -115,6 +120,13 @@ class MvpSession(BuildSession):
             self.status = GameStatus.LOST
             self.loss_reason = "HP reached zero."
             return
+        tile = self.board[pos[0]][pos[1]]
+        if tile is not None and tile.kind == "spring" and not tile.event_resolved:
+            before = self.resources.hp
+            self.resources = self.resources.apply(hp_delta=1)
+            gained = self.resources.hp - before
+            self.board[pos[0]][pos[1]] = replace(tile, event_resolved=True, event_outcome={"hp": gained, "supplies": 0})
+            self.current_event = EventNotification(pos, "spring", "You drink the last of the clear water.", gained, 0)
         altar = next((room for room in self.level.altars if room.pos == pos), None)
         if altar is not None and altar.kind not in self.activated_altars:
             first = not self.activated_altars
@@ -126,16 +138,16 @@ class MvpSession(BuildSession):
             before = self.resources
             self.resources = before.apply(supplies_delta=reward)
             actual = self.resources.supplies - before.supplies
-            self.objective_message = f"{altar.kind.replace('_', ' ').title()} activated."
+            self.objective_message = Message("{altar} activated.", altar=altar.kind.replace('_', ' ').title())
             if actual:
-                self.objective_message += f" Supplies {actual:+d}."
+                self.objective_message = Message("{message} Supplies {amount:+d}.", message=self.objective_message, amount=actual)
             self.current_event = EventNotification(pos, "altar", self.objective_message, 0, actual)
             if self.core_unlocked:
                 core_pos = self.level.core.pos
                 core = self.board[core_pos[0]][core_pos[1]]
                 assert core is not None
                 self.board[core_pos[0]][core_pos[1]] = replace(core, special_state="unlocked")
-                self.objective_message += " Core unlocked!"
+                self.objective_message = Message("{message} Core unlocked!", message=self.objective_message)
         if pos == self.level.core.pos and self.core_unlocked:
             self.status = GameStatus.WON
             self.objective_message = "All altars activated. You reached the core!"
@@ -154,6 +166,25 @@ class MvpSession(BuildSession):
         self._commit(candidate)
         return True, "ok"
 
+    def _reward_loops(self, count: int, notice: EventNotification) -> None:
+        before = self.resources.supplies
+        self.resources = self.resources.apply(supplies_delta=count)
+        self.loops_closed += count
+        self.current_event = replace(notice, loops_closed=count, loop_supplies=self.resources.supplies - before)
+
+    def _finish_build(self, pos: Position, old_board: Board) -> None:
+        self._finish_entry(pos)
+        if self.status != GameStatus.PLAYING:
+            return
+        tile = self.board[pos[0]][pos[1]]
+        assert tile is not None
+        count = loops_closed_by_room(old_board, pos, tile.doors)
+        if count:
+            notice = self.current_event
+            if notice is None or notice.pos != pos:
+                notice = EventNotification(pos, "construction", "The new room joins two passages.", 0, 0)
+            self._reward_loops(count, notice)
+
     def place(self, pos: Position) -> tuple[bool, str]:
         ok, reason = self.preview(pos)
         if not ok:
@@ -162,7 +193,7 @@ class MvpSession(BuildSession):
         ok, reason = BuildSession.place(candidate, pos)
         if not ok:
             return False, reason
-        candidate._finish_entry(pos)
+        candidate._finish_build(pos, self.board)
         self._commit(candidate)
         return True, "ok"
 
@@ -210,7 +241,7 @@ class MvpSession(BuildSession):
         ok, reason = BuildSession.place(candidate, pos)
         if not ok:
             return False, reason
-        candidate._finish_entry(pos)
+        candidate._finish_build(pos, self.board)
         self._commit(candidate)
         return True, "ok"
 
@@ -227,10 +258,12 @@ class MvpSession(BuildSession):
         if not ok:
             return False, reason
         candidate = self._candidate()
-        candidate.board = chisel_board(candidate.board, source, target,
-                                       reachable_rooms(candidate.board, candidate.player_pos))
+        reachable = reachable_rooms(candidate.board, candidate.player_pos)
+        candidate.board = chisel_board(candidate.board, source, target, reachable)
         candidate.resources = candidate.resources.apply(supplies_delta=-candidate.tools.emergency_chisel.cost_supplies)
         candidate.tool_uses["emergency_chisel"] += 1
+        if target in reachable:
+            candidate._reward_loops(1, EventNotification(target, "construction", "A shortcut through the wall.", 0, 0))
         candidate._refresh_draw()
         self._commit(candidate)
         return True, "ok"

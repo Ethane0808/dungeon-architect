@@ -15,6 +15,22 @@ def translate(text: str, language: str) -> str:
 
 
 ZH_TW = {
+    "Guard moves in {n} builds": "守衛還有 {n} 次建造後移動",
+    "{message} Guard hit!": "{message} 守衛擊中你！",
+    "{message} The guard awakens!": "{message} 守衛醒了！",
+    "The guard strikes and retreats.": "守衛擊中你，退回起點。",
+    "Guard": "守衛", "GUARD": "守衛",
+    "The first altar wakes the guard. Every 2 builds it follows its arrow. Leave the marked cell before building. Contact costs 1 HP and returns the guard to Start.":
+        "第一座祭壇喚醒守衛。每建造兩間房，守衛會沿箭頭移動一格。建造前可先走出標記格。碰到守衛會失去 1 生命，守衛隨即退回起點。",
+    "Medkit [M]  2 supplies": "回復包 [M]　2 補給",
+    "Medkit [M] heals 1 HP": "按 M 使用回復包",
+    "MEDKIT": "回復包", "Medkit": "回復包",
+    "Used a medkit to recover 1 HP.": "使用回復包，恢復 1 生命。",
+    "Health is already full.": "生命已滿。", "A medkit needs 2 supplies.": "使用回復包需要 2 補給。",
+    "Rotate, seal a door or chisel a wall to make room. When hurt, press M to use a medkit: spend 2 supplies to recover 1 HP.":
+        "旋轉房間、封門或鑿壁可開出新路。受傷時按 M 使用回復包，花 2 補給恢復 1 生命。",
+    "LOW HP": "生命不足", "1 HP LEFT": "只剩 1 生命",
+    "Well {cell} heals 1 HP": "古井 {cell} 可恢復 1 生命", "Watch for traps": "小心陷阱",
     "Vine spires": "藤蔓尖石", "Healing well": "古井", "Spring": "古井", "SPRING": "古井",
     "You drink the last of the clear water.": "你喝下了最後一口井水。",
     "Vine spires block this cell. Build around them.": "藤蔓尖石擋住了這一格，請繞路建造。",

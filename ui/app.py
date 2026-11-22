@@ -6,7 +6,7 @@ from engine.directions import N, E, S, W, neighbor_pos
 from engine.game import BuildSession
 from engine.messages import Message
 from ui.screens import (
-    RESTART_RECT, HELP_RECT, ROTATE_RECT, SEAL_RECT, CHISEL_RECT, END_RESTART_RECT,
+    RESTART_RECT, HELP_RECT, ROTATE_RECT, SEAL_RECT, CHISEL_RECT, MEDKIT_RECT, END_RESTART_RECT,
     EVENT_FEEDBACK_MS, GameRenderer, ROOM_NAMES, WINDOW_SIZE, card_at_pixel, cell_at_pixel,
     cell_label, movement_message, placement_message, tool_message, LOBBY_RECT, ENTER_RECT,
     GUIDE_RECT, EXIT_RECT, GUIDE_CLOSE_RECT, GUIDE_PREV_RECT, GUIDE_NEXT_RECT, GUIDE_PAGES, CACHE_RECT,
@@ -102,6 +102,15 @@ class GameApp:
     def toggle_help(self) -> None:
         self.help_open = not self.help_open
         self.help_page = 0
+
+    def use_medkit(self) -> None:
+        previous = self.session.current_event
+        ok, reason = self.session.use_medkit()
+        if ok:
+            self.capture_event_feedback(previous)
+            self.message = self.session.current_event.message
+        else:
+            self.message = "Health is already full." if reason == "full_health" else "A medkit needs 2 supplies."
 
     def turn_help_page(self, step: int) -> None:
         self.help_page = max(0, min(len(GUIDE_PAGES) - 1, self.help_page + step))
@@ -208,6 +217,8 @@ class GameApp:
                 self.toggle_chisel()
             elif event.key == pygame.K_e:
                 self.open_cache()
+            elif self.is_mvp and event.key == pygame.K_m:
+                self.use_medkit()
             elif event.key in MOVEMENT_KEYS:
                 self.move(neighbor_pos(*self.session.player_pos, MOVEMENT_KEYS[event.key]))
         elif event.type == pygame.MOUSEMOTION and not self.in_lobby:
@@ -254,6 +265,8 @@ class GameApp:
                 self.cycle_seal()
             elif self.is_mvp and CHISEL_RECT.collidepoint(pos):
                 self.toggle_chisel()
+            elif self.is_mvp and MEDKIT_RECT.collidepoint(pos):
+                self.use_medkit()
             elif self.session.trapped_cache and CACHE_RECT.collidepoint(pos):
                 self.open_cache()
             else:

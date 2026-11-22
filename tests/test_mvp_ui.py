@@ -16,7 +16,7 @@ from engine.resources import Resources
 from ui.app import GameApp
 from ui.locales import ZH_TW, translate
 from ui.screens import (BOARD_RECT, CACHE_RECT, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
-                        GUIDE_NEXT_RECT, GUIDE_PREV_RECT, GUIDE_PAGES, LANGUAGE_RECT,
+                        GUIDE_NEXT_RECT, GUIDE_PREV_RECT, GUIDE_PAGES, LANGUAGE_RECT, MEDKIT_RECT,
                         WINDOW_SIZE, GOLD, cell_rect, tool_message)
 
 
@@ -65,6 +65,52 @@ def labels(app, screen):
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
     return [call.args[1] for call in texts.call_args_list]
+
+
+def test_health_warning_tracks_damage_healing_and_well_use(screen):
+    app = GameApp(MvpSession(seed=104, resources=Resources(2, 5, 2, 5)))
+    assert {"LOW HP", "Well C4 heals 1 HP"} <= set(labels(app, screen))
+    key(app, pygame.K_1)
+    key(app, pygame.K_r)
+    click(app, cell_rect((3, 1)).center)
+    click(app, cell_rect((3, 2)).center)
+    assert app.session.resources.hp == 3
+    assert "LOW HP" not in labels(app, screen)
+    app.session.resources = app.session.resources.apply(hp_delta=-2)
+    assert {"1 HP LEFT", "Medkit [M] heals 1 HP"} <= set(labels(app, screen))
+    key(app, pygame.K_h)
+    assert "1 HP LEFT" not in labels(app, screen)
+    key(app, pygame.K_h)
+    app.session.status = GameStatus.LOST
+    assert "1 HP LEFT" not in labels(app, screen)
+
+
+def test_medkit_uses_supplies_without_advancing_the_turn(screen):
+    game = MvpSession(resources=Resources(3, 5, 4, 5))
+    app = GameApp(game)
+    key(app, pygame.K_1)
+    hand = game.draw_result, game.selected_index, game.build_turn, game.rng.getstate()
+    key(app, pygame.K_m)
+    assert (game.resources.hp, game.resources.supplies) == (4, 2)
+    assert app.event_feedback.category == "medkit"
+    click(app, MEDKIT_RECT.center)
+    assert (game.resources.hp, game.resources.supplies) == (5, 0)
+    assert "HP +1  |  Supplies -2" in labels(app, screen)
+    assert (game.draw_result, game.selected_index, game.build_turn, game.rng.getstate()) == hand
+
+
+@pytest.mark.parametrize("hp,supplies,status,reason", [
+    (5, 4, GameStatus.PLAYING, "full_health"),
+    (2, 1, GameStatus.PLAYING, "insufficient_supplies"),
+    (0, 4, GameStatus.LOST, "game_over"),
+    (2, 4, GameStatus.WON, "game_over"),
+])
+def test_medkit_refusals_preserve_resources_and_event(hp, supplies, status, reason):
+    game = MvpSession(resources=Resources(hp, 5, supplies, 5))
+    game.status = status
+    before = game.resources, game.current_event
+    assert game.use_medkit() == (False, reason)
+    assert (game.resources, game.current_event) == before
 
 
 def chain_level():

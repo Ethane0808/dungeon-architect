@@ -6,6 +6,7 @@ gameplay operation prepares a private candidate and commits only on success.
 """
 
 from copy import copy
+from collections import deque
 from dataclasses import replace
 from enum import Enum
 from random import Random
@@ -16,7 +17,7 @@ from engine.game import BuildSession
 from engine.level import LevelConfig, load_level_config
 from engine.models import Board, Tile
 from engine.messages import Message
-from engine.placement import can_place, frontier_cells, loops_closed_by_room, reachable_rooms
+from engine.placement import can_place, connected_neighbors, frontier_cells, loops_closed_by_room, reachable_rooms
 from engine.resources import Resources
 from engine.tools import ToolConfig, chisel_board, chisel_preview, load_tool_config, seal_card
 
@@ -54,6 +55,9 @@ class MvpSession(BuildSession):
         self.resources = self.initial_resources
         self.current_event = None
         self.loops_closed = 0
+        self.guard_pos: Position | None = None
+        self.guard_next: Position | None = None
+        self.guard_moves_on = 0
         self.activated_altars: frozenset[str] = frozenset()
         self.tool_uses = {"door_seal": 0, "emergency_chisel": 0}
         self.status = GameStatus.LOST if self.resources.hp_depleted else GameStatus.PLAYING
@@ -72,6 +76,22 @@ class MvpSession(BuildSession):
 
     def open_trapped_cache(self) -> bool:
         return self.status == GameStatus.PLAYING and super().open_trapped_cache()
+
+    def medkit_preview(self) -> tuple[bool, str]:
+        if self.status != GameStatus.PLAYING:
+            return False, "game_over"
+        if self.resources.hp == self.resources.hp_max:
+            return False, "full_health"
+        if self.resources.supplies - self.resources.supplies_min < 2:
+            return False, "insufficient_supplies"
+        return True, "ok"
+
+    def use_medkit(self) -> tuple[bool, str]:
+        ok, reason = self.medkit_preview()
+        if ok:
+            self.resources = self.resources.apply(hp_delta=1, supplies_delta=-2)
+            self.current_event = EventNotification(self.player_pos, "medkit", "Used a medkit to recover 1 HP.", 1, -2)
+        return ok, reason
 
     def preview(self, pos: Position) -> tuple[bool, str]:
         if self.status != GameStatus.PLAYING:
@@ -115,7 +135,47 @@ class MvpSession(BuildSession):
             self.draw_result = replace(self.draw_result, status="ready" if placements else "blocked",
                                        legal_placements=placements)
 
-    def _finish_entry(self, pos: Position) -> None:
+    def _plan_guard_step(self) -> Position | None:
+        if self.guard_pos is None or self.guard_pos == self.player_pos:
+            return None
+        seen = {self.guard_pos}
+        queue = deque([(self.guard_pos, None)])
+        while queue:
+            pos, first = queue.popleft()
+            for neighbor in connected_neighbors(self.board, pos):
+                if neighbor not in seen:
+                    step = first or neighbor
+                    if neighbor == self.player_pos:
+                        return step
+                    seen.add(neighbor)
+                    queue.append((neighbor, step))
+        return None
+
+    def _update_guard(self, previous_event, build_source: Position | None) -> None:
+        if self.guard_pos is None:
+            return
+        hit = self.guard_pos == self.player_pos
+        if build_source is not None and self.build_turn >= self.guard_moves_on:
+            if self.guard_next is not None:
+                self.guard_pos = self.guard_next
+                hit |= self.guard_pos in (build_source, self.player_pos)
+            self.guard_next = None
+            self.guard_moves_on = self.build_turn + 2
+        if hit:
+            self.resources = self.resources.apply(hp_delta=-1)
+            self.guard_pos = self.level.start.pos
+            self.guard_next = None
+            self.guard_moves_on = self.build_turn + 2
+            notice = self.current_event
+            if notice is not None and notice is not previous_event:
+                self.current_event = replace(notice, message=Message("{message} Guard hit!", message=notice.message),
+                                             hp_delta=notice.hp_delta - 1)
+            else:
+                self.current_event = EventNotification(self.player_pos, "guard", "The guard strikes and retreats.", -1, 0)
+        if self.guard_next is None:
+            self.guard_next = self._plan_guard_step()
+
+    def _finish_entry(self, pos: Position, previous_event, build_source: Position | None = None) -> None:
         if self.resources.hp_depleted:
             self.status = GameStatus.LOST
             self.loss_reason = "HP reached zero."
@@ -139,6 +199,10 @@ class MvpSession(BuildSession):
             self.resources = before.apply(supplies_delta=reward)
             actual = self.resources.supplies - before.supplies
             self.objective_message = Message("{altar} activated.", altar=altar.kind.replace('_', ' ').title())
+            if first:
+                self.guard_pos = self.level.start.pos
+                self.guard_moves_on = self.build_turn + 2
+                self.objective_message = Message("{message} The guard awakens!", message=self.objective_message)
             if actual:
                 self.objective_message = Message("{message} Supplies {amount:+d}.", message=self.objective_message, amount=actual)
             self.current_event = EventNotification(pos, "altar", self.objective_message, 0, actual)
@@ -148,7 +212,11 @@ class MvpSession(BuildSession):
                 assert core is not None
                 self.board[core_pos[0]][core_pos[1]] = replace(core, special_state="unlocked")
                 self.objective_message = Message("{message} Core unlocked!", message=self.objective_message)
-        if pos == self.level.core.pos and self.core_unlocked:
+        self._update_guard(previous_event, build_source)
+        if self.resources.hp_depleted:
+            self.status = GameStatus.LOST
+            self.loss_reason = "HP reached zero."
+        elif pos == self.level.core.pos and self.core_unlocked:
             self.status = GameStatus.WON
             self.objective_message = "All altars activated. You reached the core!"
         if self.status == GameStatus.PLAYING:
@@ -162,7 +230,7 @@ class MvpSession(BuildSession):
         ok, reason = BuildSession.move(candidate, pos)
         if not ok:
             return False, reason
-        candidate._finish_entry(pos)
+        candidate._finish_entry(pos, self.current_event)
         self._commit(candidate)
         return True, "ok"
 
@@ -172,13 +240,13 @@ class MvpSession(BuildSession):
         self.loops_closed += count
         self.current_event = replace(notice, loops_closed=count, loop_supplies=self.resources.supplies - before)
 
-    def _finish_build(self, pos: Position, old_board: Board) -> None:
-        self._finish_entry(pos)
+    def _finish_build(self, pos: Position, previous: "MvpSession") -> None:
+        self._finish_entry(pos, previous.current_event, previous.player_pos)
         if self.status != GameStatus.PLAYING:
             return
         tile = self.board[pos[0]][pos[1]]
         assert tile is not None
-        count = loops_closed_by_room(old_board, pos, tile.doors)
+        count = loops_closed_by_room(previous.board, pos, tile.doors)
         if count:
             notice = self.current_event
             if notice is None or notice.pos != pos:
@@ -193,7 +261,7 @@ class MvpSession(BuildSession):
         ok, reason = BuildSession.place(candidate, pos)
         if not ok:
             return False, reason
-        candidate._finish_build(pos, self.board)
+        candidate._finish_build(pos, self)
         self._commit(candidate)
         return True, "ok"
 
@@ -241,7 +309,7 @@ class MvpSession(BuildSession):
         ok, reason = BuildSession.place(candidate, pos)
         if not ok:
             return False, reason
-        candidate._finish_build(pos, self.board)
+        candidate._finish_build(pos, self)
         self._commit(candidate)
         return True, "ok"
 

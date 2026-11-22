@@ -27,6 +27,19 @@ from engine.models import Board, BOARD_SIZE, Tile, validate_board
 # reachable_rooms
 # ─────────────────────────────────────────────────────────────────────────────
 
+def connected_neighbors(board: Board, pos: tuple[int, int]):
+    """Yield traversable door-to-door steps in stable compass order."""
+    tile = board[pos[0]][pos[1]]
+    if tile is None or not tile.can_traverse():
+        return
+    for side in DIRECTIONS:
+        r, c = neighbor_pos(*pos, side)
+        if tile.doors[side] and is_in_bounds(r, c, BOARD_SIZE):
+            other = board[r][c]
+            if other and other.can_traverse() and other.doors[OPPOSITE[side]]:
+                yield r, c
+
+
 def reachable_rooms(
     board: Board,
     start: tuple[int, int],
@@ -61,38 +74,10 @@ def reachable_rooms(
     queue: deque[tuple[int, int]] = deque([start])
 
     while queue:
-        row, col = queue.popleft()
-        tile = board[row][col]
-        if tile is None:
-            continue
-
-        for direction in DIRECTIONS:
-            if not tile.doors[direction]:
-                continue  # 此方向沒有門，不能連通
-
-            nb_row, nb_col = neighbor_pos(row, col, direction)
-            if not is_in_bounds(nb_row, nb_col, BOARD_SIZE):
-                continue
-            if (nb_row, nb_col) in visited:
-                continue
-            if (nb_row, nb_col) in locked_set:
-                continue
-
-            nb_tile = board[nb_row][nb_col]
-            if nb_tile is None:
-                continue  # 目標格為空，不是已建房間
-
-            # 目標格反向也必須有門（門對門匹配）
-            back_dir = OPPOSITE[direction]
-            if not nb_tile.doors[back_dir]:
-                continue
-
-            # 目標 Tile 本身必須可通行
-            if not nb_tile.can_traverse():
-                continue
-
-            visited.add((nb_row, nb_col))
-            queue.append((nb_row, nb_col))
+        for neighbor in connected_neighbors(board, queue.popleft()):
+            if neighbor not in visited and neighbor not in locked_set:
+                visited.add(neighbor)
+                queue.append(neighbor)
 
     return visited
 

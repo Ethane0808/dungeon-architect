@@ -18,7 +18,8 @@ BOARD_RECT = pygame.Rect(240, 120, CELL_SIZE * BOARD_SIZE, CELL_SIZE * BOARD_SIZ
 CARD_RECTS = tuple(pygame.Rect(806, 112 + index * 156, 442, 144) for index in range(3))
 RESTART_RECT = pygame.Rect(1102, 24, 146, 40)
 HELP_RECT = pygame.Rect(980, 24, 110, 40)
-ROTATE_RECT = pygame.Rect(806, 594, 170, 40)
+ROTATE_RECT = pygame.Rect(806, 574, 170, 32)
+MEDKIT_RECT = pygame.Rect(806, 610, 170, 32)
 EVENT_RECT = pygame.Rect(806, 646, 442, 62)
 CACHE_RECT = pygame.Rect(592, 667, 182, 34)
 SEAL_RECT = pygame.Rect(986, 584, 126, 32)
@@ -41,7 +42,7 @@ GUIDE_PAGES = (
         ("1  BUILD", "Pick a card with 1 / 2 / 3. Rotate clockwise with R or back with Q. Click a green cell to build, enter the room and draw three new cards."),
         ("2  EXPLORE", "Use arrows, WASD or click an adjacent room to walk through matching doors. Walking is free and keeps your hand."),
         ("3  READ THE MAP", "Build from any reachable exit. Doors must meet doors, walls must meet walls, and doors must point inside the map."),
-        ("4  USE TOOLS", "If no card fits, try rotating, sealing a spare door or walking to a wall you can chisel. See Tools and loops for costs."),
+        ("4  USE TOOLS", "Rotate, seal a door or chisel a wall to make room. When hurt, press M to use a medkit: spend 2 supplies to recover 1 HP."),
     )),
     ("Rooms and survival", (
         ("ROOM CARDS", "Dead ends favor supplies. Straights are usually quiet. T junctions often hold danger or loot. Crossroads can hide relics."),
@@ -71,7 +72,7 @@ PURPLE = (161, 151, 225)
 BUILD_GREEN = (132, 213, 151)
 VINE_SPIRES = (145, 160, 88)
 SPRING = (99, 214, 228)
-EVENT_COLORS = {"supply": TEAL, "danger": RED, "neutral": MUTED, "relic": PURPLE, "spring": SPRING}
+EVENT_COLORS = {"supply": TEAL, "danger": RED, "guard": RED, "neutral": MUTED, "relic": PURPLE, "spring": SPRING}
 ROOM_TRAITS = {
     "dead_end": ("Treasure-prone", GOLD),
     "straight": ("Usually safe", TEAL),
@@ -436,6 +437,25 @@ class GameRenderer:
         self.text(surface, state, (rect.right - 7 - state_surface.get_width(), rect.top + 3),
                   color, self.small_font)
 
+    def low_health_warning(self, surface, session):
+        critical = session.resources.hp == 1
+        accent = (255, 117, 122) if critical else (245, 185, 102)
+        period = 1200 if critical else 2000
+        phase = pygame.time.get_ticks() % period / period
+        pulse = 1 - abs(2 * phase - 1)
+        border = pygame.Color(RECESS).lerp(accent, 0.45 + 0.55 * pulse)
+        pygame.draw.rect(surface, border, HP_RECT.inflate(4, 4), 3, border_radius=7)
+
+        well = next(((r, c) for r, row in enumerate(session.board) for c, tile in enumerate(row)
+                     if tile and tile.kind == "spring" and not tile.event_resolved), None)
+        hint = Message("Well {cell} heals 1 HP", cell=cell_label(well)) if well else "Watch for traps"
+        if well is None and hasattr(session, "medkit_preview") and session.medkit_preview()[0]:
+            hint = "Medkit [M] heals 1 HP"
+        panel = pygame.Rect(945, 80, 303, 28)
+        stone_frame(surface, panel, (47, 30, 39), accent)
+        self.text(surface, "1 HP LEFT" if critical else "LOW HP", (955, 85), accent, self.small_font)
+        self.text(surface, hint, (1048, 85), TEXT, self.small_font)
+
     def event_toast(self, surface, notification, age_ms):
         """Draw transient event flash, source marker and actual resource changes."""
         color = EVENT_COLORS.get(notification.category, MUTED)
@@ -504,8 +524,8 @@ class GameRenderer:
                 x = 271 + index * 189
                 pygame.draw.circle(surface, color, (x, 545), 5)
                 self.text(surface, label, (x + 12, 538), MUTED, self.small_font)
-            self.text(surface, "L opens the hall. N restarts with the same seed. F11 toggles fullscreen.",
-                      (264, 568), MUTED)
+            self.wrapped_text(surface, "The first altar wakes the guard. Every 2 builds it follows its arrow. Leave the marked cell before building. Contact costs 1 HP and returns the guard to Start.",
+                              pygame.Rect(264, 560, 750, 60), MUTED)
         elif page == 1:
             self.wrapped_text(surface, "Vine spires block building and travel. Connect a path to a blue well and walk in to heal 1 HP once. At full health the well still runs dry.",
                               pygame.Rect(264, 548, 730, 50), MUTED)
@@ -579,8 +599,13 @@ class GameRenderer:
         rooms = sum(tile is not None and tile.kind != "rubble" for row in session.board for tile in row)
         self.text(surface, Message("MAP  |  {rooms} / 49 ROOMS", rooms=rooms), (238, 90), MUTED, self.small_font)
         seed_label = self.fit_text(Message("Seed {seed}", seed=session.seed), 180, self.small_font)
+        if mvp and session.guard_pos is not None and not terminal:
+            self.text(surface, Message("Guard moves in {n} builds", n=session.guard_moves_on - session.build_turn),
+                      (385, 90), GOLD, self.small_font)
         self.text(surface, seed_label, (582, 90), MUTED, self.small_font)
         self.text(surface, "CHOOSE A ROOM", (806, 86), PURPLE, self.small_font)
+        if 0 < resources.hp <= 2 and not terminal and not help_open:
+            self.low_health_warning(surface, session)
         legal = (session.legal_cells_with_seal(seal_direction) if seal_direction is not None
                  else session.legal_cells())
         frontier = frontier_cells(session.board, reachable_rooms(session.board, session.player_pos)) if mvp else set()
@@ -705,6 +730,22 @@ class GameRenderer:
             pygame.draw.rect(surface, border, rect, width=3, border_radius=7)
         else:
             reason = "no_normal_placement" if session.blocked else "no_card_selected"
+        if mvp and session.guard_pos is not None and not terminal:
+            guard = cell_rect(session.guard_pos)
+            if session.guard_next is not None:
+                target = cell_rect(session.guard_next)
+                pygame.draw.rect(surface, GOLD, target.inflate(-8, -8), width=2, border_radius=6)
+                direction = (pygame.Vector2(target.center) - guard.center).normalize()
+                side = direction.rotate(90)
+                tip = pygame.Vector2(target.center) - direction * 16
+                pygame.draw.line(surface, GOLD, tip - direction * 24, tip, 4)
+                pygame.draw.polygon(surface, GOLD, [tip, tip - direction * 10 + side * 6,
+                                                     tip - direction * 10 - side * 6])
+            x, y = guard.right - 17, guard.top + 16
+            helmet = [(x-9,y-7), (x,y-11), (x+9,y-7), (x+8,y+4), (x,y+11), (x-8,y+4)]
+            pygame.draw.polygon(surface, RED, helmet)
+            pygame.draw.polygon(surface, RECESS, helmet, 2)
+            pygame.draw.line(surface, RECESS, (x-5,y-1), (x+5,y-1), 3)
         player_center = cell_rect(session.player_pos).center
         explorer = self.objects["explorer"]
         surface.blit(explorer, explorer.get_rect(center=player_center))
@@ -747,6 +788,7 @@ class GameRenderer:
 
         self.button(surface, ROTATE_RECT, "Rotate  [R]", session.selected_card is not None and not terminal)
         if mvp:
+            self.button(surface, MEDKIT_RECT, "Medkit [M]  2 supplies", session.medkit_preview()[0])
             seal_label = "Seal [F]" if seal_direction is None else Message("Seal {side} [F]", side="NESW"[seal_direction])
             self.button(surface, SEAL_RECT, seal_label, session.selected_card is not None and not terminal,
                         self.objects["seal"])

@@ -28,11 +28,11 @@
     "_comment": "[PROVISIONAL] 加權事件在抽牌時決定、進房時揭露（GAME_DESIGN §5）",
     "categories": ["supply", "danger", "neutral", "relic"],
     "weights_by_kind": {
-      "dead_end":   { "supply": 7, "danger": 1, "neutral": 2, "relic": 0 },
-      "straight":   { "supply": 1, "danger": 1, "neutral": 8, "relic": 0 },
-      "corner":     { "supply": 3, "danger": 1, "neutral": 6, "relic": 0 },
-      "t_junction": { "supply": 4, "danger": 4, "neutral": 2, "relic": 0 },
-      "cross":      { "supply": 2, "danger": 3, "neutral": 2, "relic": 3 }
+      "dead_end":   { "supply": 14, "danger": 4,  "neutral": 2,  "relic": 0 },
+      "straight":   { "supply": 2,  "danger": 3,  "neutral": 15, "relic": 0 },
+      "corner":     { "supply": 6,  "danger": 6,  "neutral": 8,  "relic": 0 },
+      "t_junction": { "supply": 7,  "danger": 11, "neutral": 2,  "relic": 0 },
+      "cross":      { "supply": 3,  "danger": 9,  "neutral": 2,  "relic": 6 }
     },
     "outcomes": {
       "supply": {

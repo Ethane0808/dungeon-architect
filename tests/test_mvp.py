@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 from engine.cards import draw_cards, load_card_config
+from engine.events import load_event_config
 from engine.level import LevelConfig, SpecialRoom, load_level_config
 from engine.models import Tile, make_empty_board
 from engine.mvp import GameStatus, MvpSession
@@ -35,7 +36,7 @@ def game_snapshot(session):
                      session.resources, session.current_event, session.activated_altars,
                      session.status, session.loss_reason, session.objective_message,
                      session.tool_uses, session.loops_closed, session.guard_pos,
-                     session.guard_next, session.guard_moves_on)), session.rng.getstate()
+                     session.guard_next)), session.rng.getstate()
 
 
 @pytest.mark.parametrize("seal", [False, True])
@@ -137,8 +138,8 @@ def win_compact(game, order=((2, 2), (4, 2))):
     assert game.move((3, 3)) == (True, "ok")
 
 
-@pytest.mark.parametrize("stand_on_target", [False, True])
-def test_guard_follows_forecast_after_two_builds(stand_on_target):
+@pytest.mark.parametrize("build_under_threat", [False, True])
+def test_guard_advances_on_walk_and_catches_build_under_threat(build_under_threat):
     level = compact_level()
     altar, other = level.altars
     level = replace(level, altars=(replace(altar, doors=(False, False, True, True)), other))
@@ -149,14 +150,16 @@ def test_guard_follows_forecast_after_two_builds(stand_on_target):
     assert game.guard_pos == (3, 0) and game.guard_next == (3, 1)
     game.select_card(0)
     assert game.place_with_seal((2, 1), 3)[0]
-    if stand_on_target:
-        assert game.move((3, 1))[0]
-    assert game.guard_next == (3, 1) and game.guard_moves_on == game.build_turn + 1
+    assert game.guard_pos == (3, 1) and game.guard_next == game.player_pos
     hp = game.resources.hp
     game.select_card(0)
-    assert game.place((1, 1))[0]
-    assert game.guard_pos == ((3, 0) if stand_on_target else (3, 1))
-    assert game.resources.hp == hp - int(stand_on_target)
+    if build_under_threat:
+        assert game.place((1, 1))[0]
+        assert game.guard_pos == (3, 0)
+    else:
+        assert game.move((2, 2))[0]
+        assert game.guard_pos == (2, 1)
+    assert game.resources.hp == hp - int(build_under_threat)
 
 
 def test_default_game_starts_with_visible_reserved_objectives_and_protected_hand():
@@ -286,6 +289,7 @@ def test_number_of_altars_is_configurable_and_blocked_does_not_mean_loss():
 
 def test_hp_depletion_causes_loss_after_exactly_one_room_event():
     game = MvpSession(level=compact_level(), config=cross_config("danger"),
+                      event_config=replace(load_event_config(), variants=()),
                       resources=Resources(1, 6, 2, 5))
     game.select_card(0)
     assert game.place((3, 1))[0]
@@ -301,6 +305,7 @@ def test_terminal_states_reject_every_gameplay_action_without_changes(game, term
         win_compact(game)
     else:
         game = MvpSession(level=compact_level(), config=cross_config("danger"),
+                          event_config=replace(load_event_config(), variants=()),
                           resources=Resources(1, 6, 2, 5))
         game.select_card(0)
         assert game.place((3, 1))[0]

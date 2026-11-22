@@ -37,6 +37,7 @@ class Tile:
     event_resolved: bool = False
     special_state: Optional[str] = None
     trapped_cache: int = 0
+    event_icon: str = ""
 
     def can_traverse(self) -> bool:
         """

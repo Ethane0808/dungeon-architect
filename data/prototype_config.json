@@ -42,11 +42,11 @@
         ]
       },
       "danger": {
-        "hp_delta": -1, "message": "A dart slips through a cracked mural.",
+        "hp_delta": -1, "weight": 4, "icon": "dart", "message": "A dart slips through a cracked mural.",
         "variants": [
-          { "hp_delta": -2, "message": "A lintel gives way above your head." },
-          { "supplies_delta": -1, "message": "Thorn vines snag your pack." },
-          { "trapped_cache": 2, "message": "Barbed wire binds a ration chest." }
+          { "hp_delta": -2, "weight": 1, "icon": "falling-stone", "message": "A lintel gives way above your head." },
+          { "supplies_delta": -1, "weight": 3, "icon": "thorn", "message": "Thorn vines snag your pack." },
+          { "trapped_cache": 2, "weight": 4, "icon": "barbed-cache", "message": "Barbed wire binds a ration chest." }
         ]
       },
       "neutral": {

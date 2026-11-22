@@ -83,7 +83,7 @@ class BuildSession:
         if tile.kind in {"start", "altar_a", "altar_b", "core"} or tile.event_resolved or tile.event_category is None:
             return tile, self.resources, None
         resources, notification = resolve_event(tile.event_category, pos, self.resources, self.event_config, self.seed)
-        resolved = replace(tile, event_resolved=True, trapped_cache=notification.trapped_cache, event_outcome={
+        resolved = replace(tile, event_resolved=True, event_icon=notification.icon, trapped_cache=notification.trapped_cache, event_outcome={
             "hp": notification.hp_delta, "supplies": notification.supplies_delta,
         })
         return resolved, resources, notification
@@ -108,9 +108,9 @@ class BuildSession:
         assert tile is not None and tile.event_category is not None
         gain = self.cache_gain
         self.resources = self.resources.apply(hp_delta=-1, supplies_delta=gain)
-        self.board[row][col] = replace(tile, trapped_cache=0)
+        self.board[row][col] = replace(tile, trapped_cache=0, event_icon="supply")
         self.current_event = EventNotification(self.player_pos, tile.event_category,
-                                               "Wire cuts your hand. The rations are yours.", -1, gain)
+                                               "Wire cuts your hand. The rations are yours.", -1, gain, icon="barbed-cache")
         return True
 
     def move(self, pos: Position) -> tuple[bool, str]:

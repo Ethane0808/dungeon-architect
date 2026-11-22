@@ -21,7 +21,7 @@ def test_recorded_default_seed_completes_every_objective_and_preserves_strict_ed
     assert session.build_turn == 11 and len(steps) == 18
     assert session.activated_altars == {altar.kind for altar in session.level.altars}
     assert session.core_unlocked and session.player_pos == session.level.core.pos
-    assert session.resources.hp == 5 and session.resources.supplies == 5
+    assert session.resources.hp == 4 and session.resources.supplies == 5
     assert session.tool_uses == {"door_seal": 0, "emergency_chisel": 0}
     for row in range(7):
         for col in range(7):
@@ -51,7 +51,7 @@ def test_demo_command_is_headless_and_reports_real_game_result():
                             cwd=Path(__file__).resolve().parents[1], env=os.environ.copy(),
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    assert "WON: 11 builds; HP 5/5; Supplies 5/5; altars 2/2" in result.stdout
+    assert "WON: 11 builds; HP 4/5; Supplies 5/5; altars 2/2" in result.stdout
 
 
 def test_recorded_default_win_works_through_pygame_inputs(monkeypatch):

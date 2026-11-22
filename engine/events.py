@@ -22,12 +22,16 @@ class EventOutcome:
     hp_delta: int = 0
     supplies_delta: int = 0
     trapped_cache: int = 0
+    weight: int = 1
+    icon: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.message, str) or not self.message.strip():
             raise ValueError("Event message must be a nonempty string")
         _integer(self.hp_delta, "hp_delta")
         _integer(self.supplies_delta, "supplies_delta")
+        if _integer(self.weight, "weight") < 1:
+            raise ValueError("Event weight must be positive")
         if _integer(self.trapped_cache, "trapped_cache") < 0:
             raise ValueError("Trapped cache contents cannot be negative")
 
@@ -50,6 +54,7 @@ class EventNotification:
     trapped_cache: int = 0
     loops_closed: int = 0
     loop_supplies: int = 0
+    icon: str = ""
 
 
 @dataclass(frozen=True)
@@ -123,8 +128,15 @@ def resolve_event(category: str, pos: Position, resources: Resources,
         alternatives = dict(config.variants).get(category)
         if alternatives:
             rng = Random(f"{seed}:{pos[0]}:{pos[1]}:{category}")
-            outcome = rng.choice((outcome, *alternatives))
+            options = (outcome, *alternatives)
+            # Keep the original seeded first draw. Thin lower-weight outcomes
+            # by accepting each candidate in proportion to its weight.
+            maximum = max(option.weight for option in options)
+            while True:
+                outcome = rng.choice(options)
+                if rng.randrange(maximum) < outcome.weight:
+                    break
     updated = resources.apply(hp_delta=outcome.hp_delta, supplies_delta=outcome.supplies_delta)
     return updated, EventNotification(pos, category, outcome.message,
                                       updated.hp - resources.hp, updated.supplies - resources.supplies,
-                                      outcome.trapped_cache)
+                                      outcome.trapped_cache, icon=outcome.icon or category)

@@ -139,8 +139,11 @@ class GameApp:
         ok, reason = self.session.move(pos)
         if ok:
             self.clear_tools()
-        self.message = (Message("Moved to {cell}. Backtracking is free.", cell=cell_label(pos))
+        self.message = (Message("Moved to {cell}.", cell=cell_label(pos))
                         if ok else movement_message(reason))
+        notice = self.session.current_event
+        if ok and notice is not None and notice is not event_before and notice.category == "guard":
+            self.message = notice.message
         if ok and self.is_mvp and (
             self.session.activated_altars != activated_before
             or (pos == self.session.level.core.pos and self.session.status == "WON")

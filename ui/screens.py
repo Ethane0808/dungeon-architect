@@ -8,6 +8,7 @@ import pygame
 from engine.game import BuildSession
 from engine.messages import Message
 from ui.locales import translate
+from ui.event_art import event_sprites, fit_sprites
 from engine.models import BOARD_SIZE
 from engine.placement import frontier_cells, loops_closed_by_room, reachable_rooms
 
@@ -229,6 +230,14 @@ class GameRenderer:
         self.card_tiles = {}
         self.objects = {path.stem: pygame.image.load(path)
                         for path in (room_dir.parent / "objects").glob("*.png")}
+        guard_art = self.objects["patrol-guard"]
+        bounds = guard_art.get_bounding_rect(min_alpha=64)
+        self.guard_sprite = pygame.transform.scale(
+            guard_art.subsurface(bounds), bounds.fit(pygame.Rect(0, 0, 30, 32)).size
+        )
+        sprites = event_sprites(self.objects)
+        self.room_events = fit_sprites(sprites, 24)
+        self.event_badges = fit_sprites(sprites, 18)
         # Give the obstacle a full-cell stone base and size the visible silhouette to the grid.
         self.vine_tile = self.board_floor.subsurface((0, 0, CELL_SIZE, CELL_SIZE)).copy()
         self.vine_tile.fill((188, 203, 178), special_flags=pygame.BLEND_RGB_MULT)
@@ -355,14 +364,10 @@ class GameRenderer:
             x = rect.left + 122 + (index % 2) * 152
             y = rect.top + 70 + (index // 2) * 22
             color = EVENT_COLORS.get(name, MUTED)
-            if name in ("supply", "danger"):
-                icon = self.objects[name]
+            if name in self.event_badges:
+                icon = self.event_badges[name]
                 surface.blit(icon, icon.get_rect(center=(x + 8, y)))
-            elif name == "relic":
-                pygame.draw.polygon(surface, PURPLE, [(x + 8, y - 7), (x + 14, y),
-                                                     (x + 8, y + 7), (x + 2, y)])
-                pygame.draw.line(surface, TEXT, (x + 8, y - 4), (x + 5, y))
-            else:
+            elif name != "neutral":
                 pygame.draw.line(surface, color, (x + 3, y), (x + 13, y), 2)
             label = names.get(name, name or "Other")
             self.text(surface, self.fit_text(label, 72, self.small_font), (x + 22, y - 7), TEXT, self.small_font)
@@ -478,7 +483,10 @@ class GameRenderer:
         stone_frame(toast, toast.get_rect(), (*PANEL, 246), color)
 
         category = notification.category.replace("_", " ").upper()
-        self.text(toast, category, (18, 11), color, self.small_font)
+        badge = self.event_badges.get(notification.icon)
+        if badge is not None:
+            toast.blit(badge, badge.get_rect(center=(26, 17)))
+        self.text(toast, category, (42 if badge is not None else 18, 11), color, self.small_font)
         self.text(toast, self.fit_text(notification.message, 380), (18, 31), TEXT, self.font)
         left = 18
         for name, delta, unit in (("health", notification.hp_delta, "HP"),
@@ -524,7 +532,7 @@ class GameRenderer:
                 x = 271 + index * 189
                 pygame.draw.circle(surface, color, (x, 545), 5)
                 self.text(surface, label, (x + 12, 538), MUTED, self.small_font)
-            self.wrapped_text(surface, "The first altar wakes the guard. Every 2 builds it follows its arrow. Leave the marked cell before building. Contact costs 1 HP and returns the guard to Start.",
+            self.wrapped_text(surface, "The first altar wakes a nearby guard. Each walk or build moves it along the arrow. If it targets your room, walk out before building. A hit costs 1 HP and sends it back to Start.",
                               pygame.Rect(264, 560, 750, 60), MUTED)
         elif page == 1:
             self.wrapped_text(surface, "Vine spires block building and travel. Connect a path to a blue well and walk in to heal 1 HP once. At full health the well still runs dry.",
@@ -600,8 +608,9 @@ class GameRenderer:
         self.text(surface, Message("MAP  |  {rooms} / 49 ROOMS", rooms=rooms), (238, 90), MUTED, self.small_font)
         seed_label = self.fit_text(Message("Seed {seed}", seed=session.seed), 180, self.small_font)
         if mvp and session.guard_pos is not None and not terminal:
-            self.text(surface, Message("Guard moves in {n} builds", n=session.guard_moves_on - session.build_turn),
-                      (385, 90), GOLD, self.small_font)
+            threatened = session.guard_next == session.player_pos
+            self.text(surface, "Walk now! Building costs 1 HP" if threatened else "Guard moves on walk / build",
+                      (385, 90), RED if threatened else GOLD, self.small_font)
         self.text(surface, seed_label, (582, 90), MUTED, self.small_font)
         self.text(surface, "CHOOSE A ROOM", (806, 86), PURPLE, self.small_font)
         if 0 < resources.hp <= 2 and not terminal and not help_open:
@@ -639,9 +648,8 @@ class GameRenderer:
                     elif mvp and pos == session.level.core.pos:
                         self.text(surface, "C+" if session.core_unlocked else "C-",
                                   (rect.left + 7, rect.top + 5), color, self.small_font)
-                    elif tile.event_category in ("supply", "danger"):
-                        icon = self.objects["supply" if tile.trapped_cache else tile.event_category]
-                        center = (rect.centerx + 11, rect.centery + 5) if pos == session.player_pos else rect.center
+                    elif (icon := self.room_events.get(tile.event_icon or tile.event_category)) is not None:
+                        center = (rect.centerx + 17, rect.centery + 9) if pos == session.player_pos else rect.center
                         surface.blit(icon, icon.get_rect(center=center))
                     elif tile.event_category and tile.event_category != "neutral":
                         pygame.draw.circle(surface, MUTED, (rect.right - 9, rect.bottom - 9), 3)
@@ -741,11 +749,7 @@ class GameRenderer:
                 pygame.draw.line(surface, GOLD, tip - direction * 24, tip, 4)
                 pygame.draw.polygon(surface, GOLD, [tip, tip - direction * 10 + side * 6,
                                                      tip - direction * 10 - side * 6])
-            x, y = guard.right - 17, guard.top + 16
-            helmet = [(x-9,y-7), (x,y-11), (x+9,y-7), (x+8,y+4), (x,y+11), (x-8,y+4)]
-            pygame.draw.polygon(surface, RED, helmet)
-            pygame.draw.polygon(surface, RECESS, helmet, 2)
-            pygame.draw.line(surface, RECESS, (x-5,y-1), (x+5,y-1), 3)
+            surface.blit(self.guard_sprite, self.guard_sprite.get_rect(topright=(guard.right - 5, guard.top + 3)))
         player_center = cell_rect(session.player_pos).center
         explorer = self.objects["explorer"]
         surface.blit(explorer, explorer.get_rect(center=player_center))

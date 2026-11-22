@@ -15,13 +15,15 @@ def translate(text: str, language: str) -> str:
 
 
 ZH_TW = {
-    "Guard moves in {n} builds": "守衛還有 {n} 次建造後移動",
+    "Moved to {cell}.": "已移動到 {cell}。",
+    "Guard moves on walk / build": "移動或建造，守衛前進一格",
+    "Walk now! Building costs 1 HP": "先移動！在此建造會失去 1 生命",
     "{message} Guard hit!": "{message} 守衛擊中你！",
     "{message} The guard awakens!": "{message} 守衛醒了！",
     "The guard strikes and retreats.": "守衛擊中你，退回起點。",
     "Guard": "守衛", "GUARD": "守衛",
-    "The first altar wakes the guard. Every 2 builds it follows its arrow. Leave the marked cell before building. Contact costs 1 HP and returns the guard to Start.":
-        "第一座祭壇喚醒守衛。每建造兩間房，守衛會沿箭頭移動一格。建造前可先走出標記格。碰到守衛會失去 1 生命，守衛隨即退回起點。",
+    "The first altar wakes a nearby guard. Each walk or build moves it along the arrow. If it targets your room, walk out before building. A hit costs 1 HP and sends it back to Start.":
+        "第一座祭壇喚醒守衛。每次移動或建造，守衛都沿箭頭前進一格。你的房間被標記時，先走出去再建造。被擊中會失去 1 生命，守衛退回起點。",
     "Medkit [M]  2 supplies": "回復包 [M]　2 補給",
     "Medkit [M] heals 1 HP": "按 M 使用回復包",
     "MEDKIT": "回復包", "Medkit": "回復包",

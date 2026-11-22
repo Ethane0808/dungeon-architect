@@ -283,6 +283,15 @@ def test_danger_variants_have_distinct_stories_and_resource_choices():
     initial = Resources(6, 6, 2, 5)
     notices = [resolve_event("danger", (2, 0), initial, config, seed)[1] for seed in range(64)]
     assert len({notice.message for notice in notices}) == 4
+    assert len({notice.icon for notice in notices}) == 4
     assert {(n.hp_delta, n.supplies_delta, n.trapped_cache) for n in notices} == {
         (-1, 0, 0), (-2, 0, 0), (0, -1, 0), (0, 0, 2),
     }
+
+
+def test_two_hp_loss_is_rare_among_danger_events():
+    config = load_event_config()
+    resources = Resources(5, 5, 2, 5)
+    severe = sum(resolve_event("danger", (2, 0), resources, config, seed)[1].hp_delta == -2
+                 for seed in range(2400))
+    assert 0.06 < severe / 2400 < 0.11

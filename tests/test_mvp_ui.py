@@ -428,17 +428,16 @@ def test_sealed_card_label_matches_the_displayed_room_legality(app, screen, seed
     assert state(app.session) == before
 
 
-def test_revisiting_an_altar_shows_movement_instead_of_stale_activation(screen):
+def test_guard_contact_on_altar_revisit_shows_hit_instead_of_stale_activation(screen):
     app = GameApp(MvpSession(seed=0, level=chain_level()))
     key(app, pygame.K_RIGHT)
     key(app, pygame.K_RIGHT)
     assert "Altar B activated" in app.message
     before_resources = app.session.resources
-    before_event = app.session.current_event
     before_activated = app.session.activated_altars
     key(app, pygame.K_LEFT)
     assert app.session.player_pos == (3, 1)
-    assert app.message == "Moved to B4. Backtracking is free."
-    assert app.session.resources == before_resources
-    assert app.session.current_event == before_event
+    assert app.message == "The guard strikes and retreats."
+    assert app.session.resources == before_resources.apply(hp_delta=-1)
+    assert app.session.current_event.category == "guard"
     assert app.session.activated_altars == before_activated

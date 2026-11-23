@@ -36,7 +36,45 @@ def game_snapshot(session):
                      session.resources, session.current_event, session.activated_altars,
                      session.status, session.loss_reason, session.objective_message,
                      session.tool_uses, session.loops_closed, session.guard_pos,
-                     session.guard_next)), session.rng.getstate()
+                     session.guard_next, session.guard_wake_reason)), session.rng.getstate()
+
+
+def remote_build_game():
+    level = replace(load_level_config(), rubble_count=0, spring_count=0, guard_build_limit=99)
+    game = MvpSession(seed=42, config=cross_config(), level=level)
+    assert game.select_card(0) and game.place((3, 1)) == (True, "ok")
+    assert game.move(game.level.start.pos) == (True, "ok")
+    assert game.select_card(0)
+    return game
+
+
+def test_remote_geometry_is_plannable_but_not_buildable():
+    game = remote_build_game()
+
+    assert game.geometry_preview((3, 2)) == (True, "ok")
+    assert (3, 2) in game.planning_cells()
+    assert game.preview((3, 2)) == (False, "not_at_build_frontier")
+    assert (3, 2) not in game.legal_cells()
+
+
+def test_remote_attempt_does_not_change_state_rng_or_tools():
+    game = remote_build_game()
+    before = game_snapshot(game)
+
+    assert game.place((3, 2)) == (False, "not_at_build_frontier")
+
+    assert game_snapshot(game) == before
+
+
+def test_sealed_door_changes_valid_build_entry_without_remote_cost():
+    game = remote_build_game()
+    before = game_snapshot(game)
+
+    assert game.geometry_preview_with_seal((3, 2), 0) == (True, "ok")
+    assert (3, 2) in game.planning_cells_with_seal(0)
+    assert game.preview_with_seal((3, 2), 0) == (False, "not_at_build_frontier")
+    assert game.place_with_seal((3, 2), 0) == (False, "not_at_build_frontier")
+    assert game_snapshot(game) == before
 
 
 @pytest.mark.parametrize("seal", [False, True])
@@ -145,20 +183,19 @@ def test_guard_advances_on_walk_and_catches_build_under_threat(build_under_threa
     level = replace(level, altars=(replace(altar, doors=(False, False, True, True)), other))
     game = MvpSession(seed=42, config=cross_config(), level=level)
     build_bridge(game)
-    assert game.guard_pos is None
-    assert game.move((2, 2))[0]
+    assert game.guard_wake_reason == "altar" and not game.activated_altars
     assert game.guard_pos == (3, 0) and game.guard_next == (3, 1)
-    game.select_card(0)
-    assert game.place_with_seal((2, 1), 3)[0]
-    assert game.guard_pos == (3, 1) and game.guard_next == game.player_pos
+    assert game.move((2, 2))[0]
+    # Put the guard one step behind the player. Building counts the old room as
+    # the construction source, while ordinary walking only checks the destination.
+    game.guard_pos, game.guard_next = (3, 1), (2, 2)
     hp = game.resources.hp
-    game.select_card(0)
     if build_under_threat:
-        assert game.place((1, 1))[0]
+        assert game.select_card(0) and game.place((2, 1))[0]
         assert game.guard_pos == (3, 0)
     else:
-        assert game.move((2, 2))[0]
-        assert game.guard_pos == (2, 1)
+        assert game.move((3, 2))[0]
+        assert game.guard_pos == (2, 2)
     assert game.resources.hp == hp - int(build_under_threat)
 
 
@@ -175,6 +212,63 @@ def test_default_game_starts_with_visible_reserved_objectives_and_protected_hand
     assert game.board[3][6].special_state == "locked"
     assert game.resources == Resources(5, 5, 2, 5)
     assert game.current_event is None and not any(game.tool_uses.values())
+
+
+@pytest.mark.parametrize("sealed_build", [False, True])
+def test_eleventh_successful_build_wakes_guard_and_restart_clears_alarm(sealed_build):
+    level = replace(load_level_config(), rubble_count=0, spring_count=0)
+    game = MvpSession(config=cross_config(), level=level)
+    for pos in ((3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (2, 5), (2, 4), (2, 3), (2, 2), (2, 1)):
+        assert game.select_card(0) and game.place(pos)[0]
+        assert game.guard_pos is None
+    assert game.select_card(0)
+    before = game_snapshot(game)
+    assert not game.place((2, 1))[0]
+    assert game.build_warnings((1, 1), game.selected_card.doors)[1]
+    assert game_snapshot(game) == before
+    assert game.move((2, 2))[0] and game.move((2, 1))[0]
+    assert game.guard_pos is None and game.build_turn == 10
+    ok, _ = game.place_with_seal((1, 1), 0) if sealed_build else game.place((1, 1))
+    assert ok and game.build_turn == 11 and game.guard_wake_reason == "construction"
+    assert game.resources.hp == game.initial_resources.hp and not game.activated_altars
+    assert game.guard_next is not None
+    game.restart()
+    assert game.guard_wake_reason is None and game.guard_next is None and game.build_turn == 0
+
+
+@pytest.mark.parametrize("bypass", [False, True])
+@pytest.mark.parametrize("seal", [False, True])
+def test_construction_needs_an_entrance_reachable_around_guard(bypass, seal):
+    level = replace(load_level_config(), rubble_count=0, spring_count=0)
+    game = MvpSession(config=cross_config(), level=level)
+    for pos in ((3, 1), (3, 2), (3, 3), (2, 3)):
+        assert game.select_card(0) and game.place(pos)[0]
+    if bypass:
+        assert game.move((3, 3))[0]
+        assert game.select_card(0) and game.place((3, 4))[0]
+        assert game.move((3, 3))[0] and game.move((2, 3))[0]
+    assert game.select_card(0) and game.place((2, 2))[0]
+    game.guard_pos = (2, 3)
+    game._refresh_draw()
+    target = (2, 4)
+    assert game.select_card(0)
+    before = game_snapshot(game)
+    geometry_expected = (True, "ok") if bypass else (False, "guard_blocks_route")
+    local_expected = (False, "not_at_build_frontier") if bypass else geometry_expected
+    if seal:
+        assert game.geometry_preview_with_seal(target, 0) == geometry_expected
+        assert (target in game.planning_cells_with_seal(0)) == bypass
+        assert game.preview_with_seal(target, 0) == local_expected
+        assert target not in game.legal_cells_with_seal(0)
+        assert game.place_with_seal(target, 0) == local_expected
+    else:
+        assert game.geometry_preview(target) == geometry_expected
+        assert (target in game.planning_cells()) == bypass
+        assert game.preview(target) == local_expected
+        assert target not in game.legal_cells()
+        assert any(p.pos == target for p in game.draw_result.legal_placements) == bypass
+        assert game.place(target) == local_expected
+    assert before == game_snapshot(game)
 
 
 @pytest.mark.parametrize("hp", [3, 5])
@@ -271,7 +365,7 @@ def test_first_altar_milestone_is_bounded_and_never_repeated(game):
     assert len(game.activated_altars) == 2
 
 
-def test_number_of_altars_is_configurable_and_blocked_does_not_mean_loss():
+def test_blocked_is_not_game_over():
     east_west = (False, True, False, True)
     level = LevelConfig(
         SpecialRoom("start", (3, 0), (False, True, False, False)),
@@ -281,8 +375,10 @@ def test_number_of_altars_is_configurable_and_blocked_does_not_mean_loss():
     game = MvpSession(level=level)
     assert game.blocked and game.status == GameStatus.PLAYING
     for col in range(1, 4):
+        assert not game.exits_sealed(game.board, game.player_pos)
         assert game.move((3, col))[0]
         assert game.core_unlocked == (col == 3)
+    assert not game.exits_sealed(game.board, game.player_pos)
     assert game.move((3, 4))[0]
     assert game.status == GameStatus.WON and len(game.activated_altars) == 3
 
@@ -411,6 +507,7 @@ def test_chisel_connects_an_altar_but_only_walking_into_it_activates_it(game):
                            event_category="neutral", event_resolved=True)
     assert game.move((2, 1))[0]
     assert game.chisel((2, 1), (2, 2)) == (True, "ok")
+    assert game.guard_wake_reason == "altar" and game.build_turn == 1
     assert game.activated_altars == frozenset() and game.resources.supplies == 0
     assert not game.core_unlocked
     assert game.move((2, 2))[0]
@@ -431,6 +528,7 @@ def blocked_game(game):
 
 def test_blocked_construction_can_recover_with_chisel_and_protected_new_hand(game):
     game = blocked_game(game)
+    assert not game.exits_sealed(game.board, game.level.start.pos)
     assert game.draw_result.cards == ()
     assert game.chisel((3, 1), (2, 1)) == (True, "ok")
     assert game.status == GameStatus.PLAYING and not game.blocked
@@ -462,16 +560,13 @@ def test_chisel_cannot_bypass_core_lock_even_if_external_tile_state_is_wrong(gam
 def test_failures_roll_back_complete_mvp_state_including_objectives_and_tool_costs(game, monkeypatch, kind):
     if kind == "chisel_recovery":
         game = blocked_game(game)
-        target = "engine.mvp.draw_cards"
         action = lambda: game.chisel((3, 1), (2, 1))
     elif kind == "last_altar":
         build_bridge(game)
         assert game.move((2, 2))[0] and game.move((3, 2))[0]
-        target = "engine.mvp.enumerate_legal_placements"
         action = lambda: game.move((4, 2))
     else:
         game.select_card(0)
-        target = "engine.game.draw_cards"
         action = lambda: (game.place((3, 1)) if kind == "normal_build" else game.place_with_seal((3, 1), 0))
     before = game_snapshot(game)
 
@@ -480,7 +575,7 @@ def test_failures_roll_back_complete_mvp_state_including_objectives_and_tool_cos
             kwargs["rng"].random()
         raise RuntimeError("simulated MVP preparation failure")
 
-    monkeypatch.setattr(target, fail)
+    monkeypatch.setattr("engine.mvp.draw_cards", fail)
     with pytest.raises(RuntimeError, match="MVP preparation"):
         action()
     assert game_snapshot(game) == before

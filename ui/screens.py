@@ -6,9 +6,10 @@ from pathlib import Path
 import pygame
 
 from engine.game import BuildSession
+from engine.tutorial import TutorialSession
 from engine.messages import Message
 from ui.locales import translate
-from ui.event_art import event_sprites, fit_sprites
+from ui.event_art import chest_frames, event_effect, event_sprites, fit_sprites
 from engine.models import BOARD_SIZE
 from engine.placement import frontier_cells, loops_closed_by_room, reachable_rooms
 
@@ -22,36 +23,42 @@ HELP_RECT = pygame.Rect(980, 24, 110, 40)
 ROTATE_RECT = pygame.Rect(806, 574, 170, 32)
 MEDKIT_RECT = pygame.Rect(806, 610, 170, 32)
 EVENT_RECT = pygame.Rect(806, 646, 442, 62)
-CACHE_RECT = pygame.Rect(592, 667, 182, 34)
 SEAL_RECT = pygame.Rect(986, 584, 126, 32)
 CHISEL_RECT = pygame.Rect(1122, 584, 126, 32)
+PLAN_GO_RECT = pygame.Rect(33, 474, 70, 30)
+PLAN_CANCEL_RECT = pygame.Rect(111, 474, 76, 30)
 END_RESTART_RECT = pygame.Rect(540, 422, 200, 44)
 HP_RECT = pygame.Rect(512, 22, 126, 42)
 SUPPLIES_RECT = pygame.Rect(650, 22, 144, 42)
 EVENT_FEEDBACK_MS = 2400
+CHEST_OPEN_MS = 550
 LOBBY_RECT = pygame.Rect(885, 24, 85, 40)
 LANGUAGE_RECT = pygame.Rect(800, 24, 78, 40)
 ENTER_RECT = pygame.Rect(704, 372, 294, 54)
 GUIDE_RECT = pygame.Rect(704, 442, 294, 42)
 EXIT_RECT = pygame.Rect(704, 496, 294, 42)
+TUTORIAL_RECT = pygame.Rect(704, 550, 294, 42)
+TUTORIAL_SKIP_RECT = pygame.Rect(37, 348, 148, 26)
+TUTORIAL_START_RECT = pygame.Rect(467, 416, 346, 48)
+TUTORIAL_REPLAY_RECT = pygame.Rect(467, 478, 346, 44)
 GUIDE_CLOSE_RECT = pygame.Rect(850, 612, 116, 36)
 GUIDE_PREV_RECT = pygame.Rect(264, 612, 132, 36)
 GUIDE_NEXT_RECT = pygame.Rect(408, 612, 132, 36)
 
 GUIDE_PAGES = (
-    ("First expedition", (
-        ("1  BUILD", "Pick a card with 1 / 2 / 3. Rotate clockwise with R or back with Q. Click a green cell to build, enter the room and draw three new cards."),
-        ("2  EXPLORE", "Use arrows, WASD or click an adjacent room to walk through matching doors. Walking is free and keeps your hand."),
-        ("3  READ THE MAP", "Build from any reachable exit. Doors must meet doors, walls must meet walls, and doors must point inside the map."),
+    ("Building and Navigation", (
+        ("1  BUILD", "Pick and rotate a card. Green cells are beside you: click to build. Cyan dashed cells fit elsewhere: click to plan, then confirm with Enter at the entrance."),
+        ("2  EXPLORE", "Use arrows, WASD or click an adjacent room to walk. With a plan, press G to walk one room at a time; every step advances the guard."),
+        ("3  READ THE MAP", "A plan shows its blueprint, shortest route, entrance and distance. G pauses or resumes. Esc cancels the plan before it quits the game."),
         ("4  USE TOOLS", "Rotate, seal a door or chisel a wall to make room. When hurt, press M to use a medkit: spend 2 supplies to recover 1 HP."),
     )),
-    ("Rooms and survival", (
+    ("Exploration and Survival", (
         ("ROOM CARDS", "Dead ends favor supplies. Straights are usually quiet. T junctions often hold danger or loot. Crossroads can hide relics."),
         ("FIRST ENTRY", "A room reveals its event only once. Rations give 1 or 2 supplies. Darts cost 1 HP, falling stone costs 2 HP, and thorns cost 1 supply."),
         ("BARBED CHEST", "Press E or click Open chest to trade 1 HP for up to 2 supplies. Leave it for later if your pack is full or you have only 1 HP."),
         ("ALTARS & CORE", "Walk into both altars in either order. The first gives 1 supply. Enter the unlocked core to win. Reaching zero HP ends the expedition."),
     )),
-    ("Tools and loops", (
+    ("Advanced Tools and Strategy", (
         ("DOOR SEAL", "Select a card and press F to cycle its open doors. Build to seal the marked door for 1 supply. You have three seals per expedition."),
         ("CHISEL", "Press C and click a built room across a shared wall next to you. Opening the door costs 2 supplies. You can chisel twice per expedition."),
         ("CLOSE A LOOP", "Join two exits that already have a route between them. Build a connecting room or chisel a shortcut to close the loop."),
@@ -66,11 +73,11 @@ LINE = (77, 75, 111)
 STEEL = (125, 143, 188)
 TEXT = (232, 231, 248)
 MUTED = (177, 180, 207)
-TEAL = (76, 171, 183)
-GOLD = (255, 230, 173)
-RED = (229, 113, 119)
-PURPLE = (161, 151, 225)
-BUILD_GREEN = (132, 213, 151)
+TEAL = (56, 210, 232)
+GOLD = (255, 210, 91)
+RED = (255, 99, 108)
+PURPLE = (187, 139, 255)
+BUILD_GREEN = (103, 235, 116)
 VINE_SPIRES = (145, 160, 88)
 SPRING = (99, 214, 228)
 EVENT_COLORS = {"supply": TEAL, "danger": RED, "guard": RED, "neutral": MUTED, "relic": PURPLE, "spring": SPRING}
@@ -105,6 +112,25 @@ def cell_label(pos: tuple[int, int]) -> str:
     return f"{chr(ord('A') + pos[1])}{pos[0] + 1}"
 
 
+def cache_prompt_rect(pos):
+    # Use the event area so no room, blueprint or construction entrance is hidden.
+    return EVENT_RECT.copy()
+
+
+def cache_button_rect(pos):
+    panel = cache_prompt_rect(pos)
+    return pygame.Rect(panel.right - 196, panel.y + 16, 184, 30)
+
+
+def persistent_event_marker(tile) -> str | None:
+    """Return only event markers that still represent a live or lasting object."""
+    if tile.event_category == "neutral":
+        return None
+    if tile.event_category == "danger" and tile.event_resolved:
+        return "barbed-cache" if tile.trapped_cache else None
+    return tile.event_icon or tile.event_category
+
+
 def loop_label(notification) -> str:
     count = notification.loops_closed
     amount = notification.loop_supplies
@@ -120,6 +146,8 @@ def placement_message(reason: str) -> str:
         "out_of_bounds": "Place rooms inside the map.",
         "cell_occupied": "That cell already contains a room.",
         "no_reachable_source": "Connect a door to an explored room's open exit.",
+        "guard_blocks_route": "The guard blocks the construction route.",
+        "not_at_build_frontier": "Geometry fits. Plan a route to its entrance.",
     }
     if reason in messages:
         return messages[reason]
@@ -191,7 +219,7 @@ class GameRenderer:
         self.small_font = pygame.font.Font(None, 18)
         self.language = "en"
         self.english_fonts = self.title_font, self.heading_font, self.font, self.small_font
-        font_file = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "DungeonTC-Regular.ttf"
+        font_file = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "SourceHanSansTC-Regular.otf"
         self.chinese_fonts = tuple(pygame.font.Font(font_file, size) for size in (30, 20, 16, 13))
         room_dir = Path(__file__).resolve().parents[1] / "assets" / "rooms"
         pavement = pygame.image.load(room_dir.parent / "board" / "ruin-pavement.png")
@@ -233,11 +261,12 @@ class GameRenderer:
         guard_art = self.objects["patrol-guard"]
         bounds = guard_art.get_bounding_rect(min_alpha=64)
         self.guard_sprite = pygame.transform.scale(
-            guard_art.subsurface(bounds), bounds.fit(pygame.Rect(0, 0, 30, 32)).size
+            guard_art.subsurface(bounds), bounds.fit(pygame.Rect(0, 0, 50, 56)).size
         )
         sprites = event_sprites(self.objects)
         self.room_events = fit_sprites(sprites, 24)
         self.event_badges = fit_sprites(sprites, 18)
+        self.chest_frames = chest_frames()
         # Give the obstacle a full-cell stone base and size the visible silhouette to the grid.
         self.vine_tile = self.board_floor.subsurface((0, 0, CELL_SIZE, CELL_SIZE)).copy()
         self.vine_tile.fill((188, 203, 178), special_flags=pygame.BLEND_RGB_MULT)
@@ -274,6 +303,88 @@ class GameRenderer:
                 self.room_tiles[key] = approach
         self.room_tiles = {key: pygame.transform.scale(sprite, (CELL_SIZE, CELL_SIZE))
                            for key, sprite in self.room_tiles.items()}
+        # Both altars share one symmetric amethyst silhouette and state palette.
+        for state in ("idle", "activated"):
+            crystal = pygame.Surface((44, 44), pygame.SRCALPHA)
+            edge = (216, 181, 255) if state == "activated" else (158, 119, 211)
+            face = (174, 104, 244) if state == "activated" else (104, 65, 153)
+            pygame.draw.ellipse(crystal, (54, 43, 76), (4, 32, 36, 10))
+            pygame.draw.ellipse(crystal, edge, (4, 32, 36, 10), 1)
+            pygame.draw.polygon(crystal, face, [(22, 2), (34, 14), (31, 31), (22, 38), (13, 31), (10, 14)])
+            pygame.draw.polygon(crystal, edge, [(22, 2), (34, 14), (31, 31), (22, 38), (13, 31), (10, 14)], 1)
+            pygame.draw.polygon(crystal, (206, 158, 255), [(22, 3), (26, 15), (22, 36), (18, 15)])
+            # A raised, stepped stone pedestal anchors the crystal in the ruin.
+            pygame.draw.rect(crystal, (59, 54, 79), (8, 33, 28, 7))
+            pygame.draw.line(crystal, (153, 137, 177), (8, 33), (35, 33), 2)
+            pygame.draw.rect(crystal, (85, 76, 105), (4, 39, 36, 4))
+            pygame.draw.line(crystal, (173, 154, 194), (4, 39), (39, 39))
+            pygame.draw.line(crystal, edge, (18, 36), (25, 36))
+            # Mirror the left half exactly, including rasterized outlines.
+            mirrored = pygame.transform.flip(crystal.subsurface((0, 0, 22, 44)), True, False)
+            crystal.fill((0, 0, 0, 0), (22, 0, 22, 44))
+            crystal.blit(mirrored, (22, 0))
+            for altar in ("altar_a", "altar_b"):
+                name = f"{altar}-{state}"
+                self.objects[name] = crystal
+                for doors in self.card_tiles:
+                    tile = self.room_tiles[doors].copy()
+                    tile.blit(crystal, (16, 16))
+                    self.room_tiles[name, doors] = tile
+        # The final destination is a carved portal, dark until both altars awaken.
+        for state in ("locked", "unlocked"):
+            active = state == "unlocked"
+            portal = pygame.Surface((44, 44), pygame.SRCALPHA)
+            if active:
+                for inset, alpha in ((0, 32), (3, 55), (6, 90)):
+                    pygame.draw.ellipse(portal, (69, 245, 137, alpha), (inset, inset, 44 - 2 * inset, 44 - 2 * inset))
+            arch = [(5, 36), (5, 15), (9, 7), (16, 2), (28, 2), (35, 7), (39, 15), (39, 36)]
+            pygame.draw.polygon(portal, (78, 82, 91), arch)
+            pygame.draw.lines(portal, (154, 160, 165), False, arch, 2)
+            opening = [(11, 35), (11, 16), (14, 10), (22, 6), (30, 10), (33, 16), (33, 35)]
+            pygame.draw.polygon(portal, (22, 85, 52) if active else (15, 17, 24), opening)
+            if active:
+                pygame.draw.ellipse(portal, (44, 171, 100), (13, 10, 18, 27))
+                pygame.draw.ellipse(portal, (91, 242, 151), (16, 13, 12, 21))
+                pygame.draw.ellipse(portal, (199, 255, 218), (19, 17, 6, 15))
+                pygame.draw.lines(portal, (115, 255, 170), False, opening, 1)
+            else:
+                # Two dormant sockets echo the two altar objectives.
+                for x in (18, 26):
+                    pygame.draw.polygon(portal, (56, 54, 67), [(x, 20), (x + 2, 23), (x, 26), (x - 2, 23)])
+            rune = (120, 255, 172) if active else (91, 96, 105)
+            for x in (7, 36):
+                for y in (17, 24, 31):
+                    pygame.draw.line(portal, rune, (x, y), (x + 1, y + 2))
+            # Keystone and broad entry steps distinguish the exit from a room.
+            pygame.draw.polygon(portal, rune, [(22, 1), (25, 4), (22, 7), (19, 4)])
+            for y, x in ((36, 7), (39, 3)):
+                pygame.draw.rect(portal, (73, 80, 87), (x, y, 44 - 2 * x, 4))
+                pygame.draw.line(portal, rune, (x, y), (43 - x, y))
+            name = f"core-{state}"
+            self.objects[name] = portal
+            for doors in self.card_tiles:
+                tile = self.room_tiles[doors].copy()
+                tile.blit(portal, (16, 16))
+                self.room_tiles[name, doors] = tile
+        # The tutorial uses different doorway shapes for its landmarks. Keep
+        # their painted centers while retaining the playable exits.
+        landmark_doors = {
+            "altar_a-idle": (False, False, True, True),
+            "altar_a-activated": (False, False, True, True),
+            "altar_b-idle": (True, False, False, True),
+            "altar_b-activated": (True, False, False, True),
+            "core-locked": (True, False, True, True),
+            "core-unlocked": (True, False, True, True),
+        }
+        center = pygame.Rect(16, 16, 44, 44)
+        for name, original_doors in landmark_doors.items():
+            original = self.room_tiles[name, original_doors]
+            for doors in self.card_tiles:
+                if (name, doors) not in self.room_tiles and doors in self.room_tiles:
+                    variant = self.room_tiles[doors].copy()
+                    variant.fill((0, 0, 0, 0), center)
+                    variant.blit(original, center, center)
+                    self.room_tiles[name, doors] = variant
         self.lobby_backdrop = self.backdrop.copy()
         hall = self.lobby_backdrop
         stone_frame(hall, (138, 134, 1004, 474), RECESS, cut=18)
@@ -324,6 +435,77 @@ class GameRenderer:
         self.button(surface, ENTER_RECT, Message("{action}   [Enter]", action=action))
         self.button(surface, GUIDE_RECT, "Field guide   [H]")
         self.button(surface, EXIT_RECT, "Quit   [Esc]")
+        self.button(surface, TUTORIAL_RECT, "Learn to play [T]")
+
+    def tutorial(self, surface, session):
+        if session.status == "LOST":
+            return  # Keep the normal defeat message and restart controls visible.
+        if session.lesson == 5:
+            shade = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+            shade.fill((8, 12, 24, 190))
+            surface.blit(shade, (0, 0))
+            stone_frame(surface, (384, 278, 512, 290), RECESS, GOLD, cut=16)
+            self.text(surface, "You're ready to build your dungeon!", (414, 324), GOLD, self.heading_font)
+            self.text(surface, "6 / 6", (820, 292), MUTED, self.small_font)
+            self.wrapped_text(surface, session.narration, pygame.Rect(414, 364, 452, 42), TEXT)
+            self.button(surface, TUTORIAL_START_RECT, "Start Adventure  [Enter]")
+            self.button(surface, TUTORIAL_REPLAY_RECT, "Replay Tutorial  [T]")
+            return
+        instruction = (
+            "Choose a room card.",
+            "Rotate to connect doors, then build.",
+            "Move through connected rooms.",
+            "Plan anywhere. Build from nearby.",
+            "Activate both altars to unlock the core.",
+        )[session.lesson]
+        tip = (
+            "Click card 1 / press 1.",
+            "R, then click B4.",
+            "Left / click A4: free.",
+            "G, then Enter." if session.plan_created else "1, R, then click C4.",
+            "Walk right to the core.",
+        )[session.lesson]
+        stone_frame(surface, (20, 250, 181, 126), RECESS, GOLD)
+        self.text(surface, "Learn to play", (32, 259), GOLD, self.heading_font)
+        self.text(surface, f"{session.lesson + 1} / 6", (149, 261), MUTED, self.small_font)
+        self.wrapped_text(surface, instruction, pygame.Rect(32, 284, 156, 40), TEXT)
+        self.wrapped_text(surface, tip, pygame.Rect(32, 324, 156, 24), MUTED)
+        self.button(surface, TUTORIAL_SKIP_RECT, "Skip Tutorial")
+        player = cell_rect(session.player_pos)
+        narration = pygame.Rect(player.centerx - 180, player.top - 112, 360, 102)
+        narration.clamp_ip(BOARD_RECT.inflate(-12, -12))
+        stone_frame(surface, narration, RECESS, GOLD)
+        self.wrapped_text(surface, session.narration, narration.inflate(-20, -16), TEXT)
+        pygame.draw.line(surface, GOLD, narration.midbottom, player.midtop, 2)
+        dim = pygame.Surface(CARD_RECTS[0].size, pygame.SRCALPHA)
+        dim.fill((7, 9, 18, 130))
+        for index in ((1, 2) if session.lesson in (0, 1, 3) else (0, 1, 2)):
+            surface.blit(dim, CARD_RECTS[index])
+        focus = CARD_RECTS[0] if session.lesson == 0 else ROTATE_RECT if session.lesson == 1 and (
+            session.selected_card is None or not session.selected_card.doors[3]
+        ) else cell_rect(session.lesson_target) if session.lesson_target is not None else None
+        if focus is not None:
+            pulse = 3 + pygame.time.get_ticks() // 220 % 3
+            pygame.draw.rect(surface, GOLD, focus.inflate(-4, -4), pulse, border_radius=7)
+            pygame.draw.circle(surface, GOLD, (focus.centerx, focus.top - 7), 5 + pulse // 2)
+        if session.lesson == 1 and session.selected_card is not None:
+            preview = session.geometry_preview(session.BUILD)
+            if preview[0]:
+                rect = cell_rect(session.BUILD).inflate(-8, -8)
+                ghost = pygame.Surface(rect.size, pygame.SRCALPHA)
+                self.tile_art(ghost, ghost.get_rect(), session.selected_card.doors, TEAL)
+                ghost.set_alpha(130)
+                surface.blit(ghost, rect)
+                pygame.draw.line(surface, GOLD, cell_rect(session.level.start.pos).midright,
+                                 cell_rect(session.BUILD).midleft, 5)
+        if session.lesson == 4:
+            for room in (*session.level.altars, session.level.core):
+                pygame.draw.rect(surface, GOLD, cell_rect(room.pos).inflate(-6, -6), 2, border_radius=8)
+
+    def context_tip(self, surface, message):
+        panel = pygame.Rect(807, 646, 441, 62)
+        stone_frame(surface, panel, RECESS, GOLD)
+        self.wrapped_text(surface, message, pygame.Rect(822, 660, 410, 38), GOLD)
 
     def tile_art(self, surface, rect, doors, color=TEAL, *, special=None, card=False):
         tiles = self.card_tiles if card else self.room_tiles
@@ -398,17 +580,24 @@ class GameRenderer:
 
     def wrapped_text(self, surface, message, rect, color=TEXT):
         message = self.t(message)
-        # Keep Latin words/shortcuts together and allow breaks between Chinese characters.
         tokens = re.findall(r"[A-Za-z0-9_]+|\s+|.", message)
-        lines = [""]
-        for word in tokens:
-            candidate = lines[-1] + word
-            if self.font.size(candidate)[0] > rect.width and lines[-1]:
-                lines.append(word.lstrip())
-            else:
-                lines[-1] = candidate
-        for index, line in enumerate(lines[:max(1, (rect.height + 3) // 23)]):
-            self.text(surface, line.rstrip(), (rect.x, rect.y + index * 23), color)
+        for font in (self.font, self.small_font):
+            spacing = max(font.get_linesize(), 17)
+            capacity = max(1, rect.height // spacing)
+            lines = [""]
+            for word in tokens:
+                candidate = lines[-1] + word
+                if font.size(candidate)[0] > rect.width and lines[-1]:
+                    lines.append(word.lstrip())
+                else:
+                    lines[-1] = candidate
+            if len(lines) <= capacity or font is self.small_font:
+                break
+        for index, line in enumerate(lines[:capacity]):
+            if index == capacity - 1 and len(lines) > capacity:
+                line = self.fit_text(line.rstrip() + "...", rect.width, font)
+            self.text(surface, self.fit_text(line.rstrip(), rect.width, font),
+                      (rect.x, rect.y + index * spacing), color, font)
 
     def button(self, surface, rect, label, enabled=True, icon=None):
         stone_frame(surface, rect, (46, 44, 74) if enabled else RECESS)
@@ -451,28 +640,94 @@ class GameRenderer:
         border = pygame.Color(RECESS).lerp(accent, 0.45 + 0.55 * pulse)
         pygame.draw.rect(surface, border, HP_RECT.inflate(4, 4), 3, border_radius=7)
 
+        reachable = reachable_rooms(session.board, session.player_pos)
         well = next(((r, c) for r, row in enumerate(session.board) for c, tile in enumerate(row)
-                     if tile and tile.kind == "spring" and not tile.event_resolved), None)
-        hint = Message("Well {cell} heals 1 HP", cell=cell_label(well)) if well else "Watch for traps"
-        if well is None and hasattr(session, "medkit_preview") and session.medkit_preview()[0]:
-            hint = "Medkit [M] heals 1 HP"
+                     if (r, c) in reachable and tile.kind == "spring" and not tile.event_resolved), None)
+        medkit = hasattr(session, "medkit_preview") and session.medkit_preview()[0]
+        if well is not None:
+            hint = Message("Medkit [M] or free well {cell}" if medkit else "Well {cell} heals 1 HP", cell=cell_label(well))
+        else:
+            hint = "Medkit [M] heals 1 HP" if medkit else "Watch for traps"
         panel = pygame.Rect(945, 80, 303, 28)
         stone_frame(surface, panel, (47, 30, 39), accent)
         self.text(surface, "1 HP LEFT" if critical else "LOW HP", (955, 85), accent, self.small_font)
         self.text(surface, hint, (1048, 85), TEXT, self.small_font)
 
-    def event_toast(self, surface, notification, age_ms):
+    def guard_panel(self, surface, session):
+        stone_frame(surface, (20, 251, 181, 122), RECESS)
+        awake = session.guard_pos is not None
+        limit = session.level.guard_build_limit
+        remaining = limit - session.build_turn
+        accent = RED if awake or remaining == 1 else GOLD
+        self.text(surface, "Guard awake" if awake else "Guard alert", (33, 262), accent, self.heading_font)
+        if awake:
+            cause = ("An altar echoes." if session.guard_wake_reason == "altar" else "The stonework echoes.")
+            self.text(surface, cause, (33, 293), TEXT, self.small_font)
+            self.text(surface, "Armored steps follow you.", (33, 316), TEXT, self.small_font)
+            if session.guard_next is not None:
+                self.text(surface, Message("Next step: {cell}", cell=cell_label(session.guard_next)),
+                          (33, 343), GOLD, self.small_font)
+            return
+        counter = f"{session.build_turn}/{limit}"
+        self.text(surface, counter, (188 - self.small_font.size(counter)[0], 269), TEXT, self.small_font)
+        track = pygame.Rect(33, 295, 154, 10)
+        pygame.draw.rect(surface, LINE, track, border_radius=3)
+        width = round(track.width * session.build_turn / limit)
+        if width:
+            pygame.draw.rect(surface, accent, (track.x, track.y, width, track.height), border_radius=3)
+        self.text(surface, "One more room wakes it!" if remaining == 1 else "Each build stirs the guard.",
+                  (33, 316), accent if remaining == 1 else TEXT, self.small_font)
+        self.text(surface, "Full bar or altar link: awake.", (33, 343), MUTED, self.small_font)
+
+    def supply_chest(self, surface, pos, player_pos, notification, age_ms):
+        """Derive an opened chest from persisted resolution, including older rooms."""
+        active = notification is not None and notification.category == "supply" and notification.pos == pos
+        frame = self.chest_frames[-1]
+        if active and 0 <= age_ms < CHEST_OPEN_MS:
+            frame = self.chest_frames[min(3, age_ms * 4 // CHEST_OPEN_MS)]
+        rect = cell_rect(pos)
+        center = (rect.centerx + 19, rect.centery + 10) if pos == player_pos else rect.center
+        surface.blit(frame, frame.get_rect(center=center))
+
+    def cache_prompt(self, surface, session):
+        panel = cache_prompt_rect(session.player_pos)
+        gain = session.cache_gain
+        enabled = session.resources.hp > 1 and gain > 0
+        cell = cell_rect(session.player_pos)
+        pygame.draw.rect(surface, GOLD, cell.inflate(-6, -6), 2, border_radius=6)
+        stone_frame(surface, panel, RECESS, GOLD)
+        self.text(surface, "Barbed chest", (panel.x + 10, panel.y + 6), GOLD, self.small_font)
+        self.button(surface, cache_button_rect(session.player_pos), "Open chest  [E]", enabled)
+        detail = Message("HP -1  |  Supplies +{amount}", amount=gain)
+        if session.resources.hp <= 1:
+            detail = "Need at least 2 HP"
+        elif not gain:
+            detail = "Supplies full"
+        self.text(surface, detail, (panel.x + 10, panel.y + 34), TEXT, self.small_font)
+
+    def event_toast(self, surface, notification, age_ms, avoid_rect=None):
         """Draw transient event flash, source marker and actual resource changes."""
         color = EVENT_COLORS.get(notification.category, MUTED)
-        flash = max(0, 42 - age_ms * 42 // 500) if age_ms < 500 else 0
+        quiet = notification.category == "neutral"
+        flash = max(0, 42 - age_ms * 42 // 500) if age_ms < 500 and not quiet else 0
         if flash:
             glow_width = 2 + flash // 14
             pygame.draw.rect(surface, color, BOARD_RECT.inflate(4, 4),
                              width=glow_width, border_radius=12)
 
         source = cell_rect(notification.pos).inflate(-4, -4)
-        pulse = 2 + (age_ms // 110) % 3
-        pygame.draw.rect(surface, color, source.inflate(pulse, pulse), width=3, border_radius=8)
+        if not quiet:
+            pulse = 3 + (age_ms // 90) % 4
+            pygame.draw.rect(surface, RECESS, source.inflate(pulse + 3, pulse + 3), width=5, border_radius=9)
+            pygame.draw.rect(surface, color, source.inflate(pulse, pulse), width=4, border_radius=8)
+        if notification.category == "supply" and age_ms < 1000:
+            gain = notification.supplies_delta
+            label = Message("Supplies +{amount}", amount=gain) if gain else "Supplies full"
+            rendered = self.small_font.render(self.t(label), True, GOLD)
+            position = rendered.get_rect(midbottom=(source.centerx, source.top + 8 - min(age_ms, 550) // 35))
+            position.clamp_ip(BOARD_RECT)
+            pygame.draw.rect(surface, RECESS, position.inflate(6, 4), border_radius=3)
+            surface.blit(rendered, position)
 
         fade_start = 1750
         alpha = 255 if age_ms <= fade_start else max(
@@ -487,7 +742,7 @@ class GameRenderer:
         if badge is not None:
             toast.blit(badge, badge.get_rect(center=(26, 17)))
         self.text(toast, category, (42 if badge is not None else 18, 11), color, self.small_font)
-        self.text(toast, self.fit_text(notification.message, 380), (18, 31), TEXT, self.font)
+        self.wrapped_text(toast, notification.message, pygame.Rect(18, 30, 384, 32), TEXT)
         left = 18
         for name, delta, unit in (("health", notification.hp_delta, "HP"),
                                   ("supply", notification.supplies_delta, "Supplies")):
@@ -503,9 +758,13 @@ class GameRenderer:
         if notification.loops_closed:
             self.text(toast, loop_label(notification), (left, 58), GOLD, self.small_font)
         elif not notification.hp_delta and not notification.supplies_delta:
-            self.text(toast, "No resource change", (18, 58), MUTED, self.small_font)
+            self.text(toast, "Supplies full" if notification.category == "supply" else "No resource change",
+                      (18, 58), MUTED, self.small_font)
         toast.set_alpha(alpha)
-        surface.blit(toast, (BOARD_RECT.centerx - toast.get_width() // 2, 142 - rise))
+        toast_rect = toast.get_rect(midtop=(BOARD_RECT.centerx, 142 - rise))
+        if toast_rect.colliderect(source) or (avoid_rect is not None and toast_rect.colliderect(avoid_rect)):
+            toast_rect.bottom = BOARD_RECT.bottom - 12
+        surface.blit(toast, toast_rect)
 
     def help_overlay(self, surface, page=0):
         shade = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
@@ -532,7 +791,7 @@ class GameRenderer:
                 x = 271 + index * 189
                 pygame.draw.circle(surface, color, (x, 545), 5)
                 self.text(surface, label, (x + 12, 538), MUTED, self.small_font)
-            self.wrapped_text(surface, "The first altar wakes a nearby guard. Each walk or build moves it along the arrow. If it targets your room, walk out before building. A hit costs 1 HP and sends it back to Start.",
+            self.wrapped_text(surface, "Link an altar or fill the guard alert bar to wake the guard. Each walk or build moves it along the arrow. A hit costs 1 HP and sends it back to Start.",
                               pygame.Rect(264, 560, 750, 60), MUTED)
         elif page == 1:
             self.wrapped_text(surface, "Vine spires block building and travel. Connect a path to a blue well and walk in to heal 1 HP once. At full health the well still runs dry.",
@@ -545,7 +804,7 @@ class GameRenderer:
                 node = pygame.Rect(point[0] - 6, point[1] - 6, 12, 12)
                 pygame.draw.rect(surface, PANEL, node)
                 pygame.draw.rect(surface, STEEL, node, 1)
-            self.wrapped_text(surface, "Close the gold side of this U. Try seed 42: build A3 (card 1, R), B4 (card 2, Q), then B3 (card 1, R twice).",
+            self.wrapped_text(surface, "Close the gold side of this U. Seed 42: build A3 (card 1, R), walk back to A4, build B4 (card 2, Q), then B3 (card 1, R twice).",
                               pygame.Rect(359, 541, 650, 54), MUTED)
         self.button(surface, GUIDE_PREV_RECT, "<  Previous", page > 0)
         self.button(surface, GUIDE_NEXT_RECT, "Next  >", page + 1 < len(GUIDE_PAGES))
@@ -583,7 +842,8 @@ class GameRenderer:
 
     def draw(self, surface, session: BuildSession, hovered_pos, message: str, *,
              seal_direction: int | None = None, chisel_mode: bool = False,
-             help_open: bool = False, help_page: int = 0, event_feedback=None, feedback_age: int = 0):
+             help_open: bool = False, help_page: int = 0, event_feedback=None, feedback_age: int = 0,
+             pending_plan=None, auto_walking: bool = False, nav_pause_reason: str | None = None):
         mvp = hasattr(session, "level")
         terminal = getattr(session, "status", "PLAYING") in ("WON", "LOST")
         if terminal:
@@ -617,7 +877,12 @@ class GameRenderer:
             self.low_health_warning(surface, session)
         legal = (session.legal_cells_with_seal(seal_direction) if seal_direction is not None
                  else session.legal_cells())
-        frontier = frontier_cells(session.board, reachable_rooms(session.board, session.player_pos)) if mvp else set()
+        planning = ((session.planning_cells_with_seal(seal_direction) if seal_direction is not None
+                     else session.planning_cells()) if mvp and session.selected_card is not None else set())
+        reachable = reachable_rooms(session.board, session.player_pos) if mvp else set()
+        build_region = (reachable_rooms(session.board, session.player_pos, (session.guard_pos,))
+                        if mvp and session.guard_pos is not None else reachable)
+        frontier = frontier_cells(session.board, build_region) if mvp else set()
         altar_positions = {altar.pos: index + 1 for index, altar in enumerate(session.level.altars)} if mvp else {}
         surface.blit(self.board_floor, BOARD_RECT)
         for row in range(BOARD_SIZE):
@@ -648,7 +913,13 @@ class GameRenderer:
                     elif mvp and pos == session.level.core.pos:
                         self.text(surface, "C+" if session.core_unlocked else "C-",
                                   (rect.left + 7, rect.top + 5), color, self.small_font)
-                    elif (icon := self.room_events.get(tile.event_icon or tile.event_category)) is not None:
+                    elif (tile.event_category == "supply" or tile.event_icon == "supply") and (
+                        tile.event_resolved and not tile.trapped_cache
+                    ):
+                        self.supply_chest(surface, pos, session.player_pos, event_feedback, feedback_age)
+                    elif (marker := persistent_event_marker(tile)) is not None and (
+                        icon := self.room_events.get(marker)
+                    ) is not None:
                         center = (rect.centerx + 17, rect.centery + 9) if pos == session.player_pos else rect.center
                         surface.blit(icon, icon.get_rect(center=center))
                     elif tile.event_category and tile.event_category != "neutral":
@@ -656,46 +927,90 @@ class GameRenderer:
                 elif fits:
                     surface.blit(self.legal_tint, rect)
                     pygame.draw.rect(surface, BUILD_GREEN, rect, width=2)
+                elif pos in planning:
+                    pygame.draw.rect(surface, (*TEAL, 35), rect, width=1)
+                    dash = 8
+                    for x in range(rect.left, rect.right, dash * 2):
+                        pygame.draw.line(surface, TEAL, (x, rect.top), (min(x + dash, rect.right), rect.top), 2)
+                        pygame.draw.line(surface, TEAL, (x, rect.bottom), (min(x + dash, rect.right), rect.bottom), 2)
+                    for y in range(rect.top, rect.bottom, dash * 2):
+                        pygame.draw.line(surface, TEAL, (rect.left, y), (rect.left, min(y + dash, rect.bottom)), 2)
+                        pygame.draw.line(surface, TEAL, (rect.right, y), (rect.right, min(y + dash, rect.bottom)), 2)
                 elif pos in frontier:
                     pygame.draw.circle(surface, TEAL, rect.center, 3)
                 else:
                     surface.blit(self.unknown_mark, self.unknown_mark.get_rect(center=rect.center))
                 if chisel_mode and tile is not None and session.chisel_preview(session.player_pos, pos)[0]:
                     pygame.draw.rect(surface, GOLD, rect, width=2, border_radius=7)
+        if pending_plan is not None:
+            route_points = [cell_rect(pos).center for pos in pending_plan.path]
+            if len(route_points) > 1:
+                pygame.draw.lines(surface, TEAL, False, route_points, 4)
+            for point in route_points:
+                pygame.draw.circle(surface, RECESS, point, 7)
+                pygame.draw.circle(surface, TEAL, point, 5)
+            entry_rect = cell_rect(pending_plan.entry).inflate(-15, -15)
+            pygame.draw.rect(surface, GOLD, entry_rect, width=3, border_radius=9)
+            target_rect = cell_rect(pending_plan.target).inflate(-5, -5)
+            blueprint = pygame.Surface(target_rect.size, pygame.SRCALPHA)
+            card = session.selected_card
+            if card is not None:
+                doors = tuple(False if side == pending_plan.seal_direction else value
+                              for side, value in enumerate(card.doors))
+                self.tile_art(blueprint, blueprint.get_rect(), doors, TEAL)
+                blueprint.set_alpha(105)
+            else:
+                blueprint.fill((*TEAL, 45))
+            surface.blit(blueprint, target_rect)
+            pygame.draw.rect(surface, GOLD, target_rect, width=3, border_radius=8)
         for index in range(BOARD_SIZE):
             self.text(surface, chr(ord('A') + index),
                       (cell_rect((0, index)).centerx - 5, BOARD_RECT.top - 15), MUTED, self.small_font)
             self.text(surface, str(index + 1), (BOARD_RECT.left - 18, BOARD_RECT.top + index * CELL_SIZE + 28),
                       MUTED, self.small_font)
-        stone_frame(surface, (20, 86, 181, 210), RECESS)
+        stone_frame(surface, (20, 86, 181, 159), RECESS)
         self.text(surface, "Objectives", (33, 102), TEXT, self.heading_font)
         if mvp:
             for index, altar in enumerate(session.level.altars[:2]):
                 active = altar.kind in session.activated_altars
-                self.objective_chip(surface, pygame.Rect(33, 148 + index * 41, 155, 28),
+                self.objective_chip(surface, pygame.Rect(33, 129 + index * 31, 155, 28),
                                     Message("A{index} {cell}", index=index + 1, cell=cell_label(altar.pos)),
                                     "ACTIVE" if active else "IDLE", GOLD if active else PURPLE)
-            self.objective_chip(surface, pygame.Rect(33, 230, 155, 28),
+            self.objective_chip(surface, pygame.Rect(33, 191, 155, 28),
                                 Message("CORE {cell}", cell=cell_label(session.level.core.pos)),
                                 "OPEN" if session.core_unlocked else "LOCKED",
                                 TEAL if session.core_unlocked else RED)
-            self.text(surface, Message("Loops closed   {count}", count=session.loops_closed), (37, 268), GOLD, self.small_font)
+            self.text(surface, Message("Loops closed   {count}", count=session.loops_closed), (37, 223), GOLD, self.small_font)
+            self.guard_panel(surface, session)
         else:
             self.text(surface, "Explore the ruins", (33, 148), MUTED)
-        stone_frame(surface, (20, 307, 181, 177), RECESS)
-        self.text(surface, "Map key", (33, 321), TEXT, self.heading_font)
-        legend = [("Built room", STEEL), ("Can build", BUILD_GREEN), ("Unexplored", MUTED), ("Landmark", PURPLE)]
-        if mvp:
-            legend.extend((("Vine spires", VINE_SPIRES), ("Healing well", SPRING)))
-        for index, (label, color) in enumerate(legend):
-            y = 351 + index * 21
-            pygame.draw.rect(surface, color, (34, y, 13, 13), width=1 if index in (1, 2) else 0)
-            self.text(surface, label, (58, y), TEXT, self.small_font)
-        stone_frame(surface, (20, 496, 181, 212), RECESS)
-        self.text(surface, "Map overview", (33, 510), TEXT, self.heading_font)
+        stone_frame(surface, (20, 379, 181, 146), RECESS)
+        if pending_plan is not None:
+            self.text(surface, "Build plan", (33, 385), TEXT, self.heading_font)
+            self.text(surface, Message("Target {cell}", cell=cell_label(pending_plan.target)), (33, 412), GOLD, self.small_font)
+            self.text(surface, Message("Entrance {cell}", cell=cell_label(pending_plan.entry)), (33, 430), TEAL, self.small_font)
+            self.text(surface, Message("Steps {steps}", steps=pending_plan.steps), (33, 448), TEXT, self.small_font)
+            self.button(surface, PLAN_GO_RECT, "Pause" if auto_walking else "Go [G]")
+            self.button(surface, PLAN_CANCEL_RECT, "Cancel")
+            threatened = any(pos in (session.guard_pos, session.guard_next) for pos in pending_plan.path[1:])
+            note = "Guard threat on route" if threatened else "Each step moves guard"
+            if pending_plan.steps == 0:
+                note = "Ready — Enter to build"
+            self.text(surface, note, (33, 508), RED if threatened else MUTED, self.small_font)
+        else:
+            self.text(surface, "Map key", (33, 385), TEXT, self.heading_font)
+            legend = [("Built room", STEEL), ("Can build", BUILD_GREEN), ("Plan only", TEAL), ("Landmark", PURPLE)]
+            if mvp:
+                legend.extend((("Vine spires", VINE_SPIRES), ("Healing well", SPRING)))
+            for index, (label, color) in enumerate(legend):
+                y = 412 + index * 18
+                pygame.draw.rect(surface, color, (34, y, 13, 13), width=1 if index in (1, 2) else 0)
+                self.text(surface, label, (58, y), TEXT, self.small_font)
+        stone_frame(surface, (20, 531, 181, 177), RECESS)
+        self.text(surface, "Map overview", (33, 536), TEXT, self.heading_font)
         for row, tiles in enumerate(session.board):
             for col, tile in enumerate(tiles):
-                box = pygame.Rect(44 + col * 19, 551 + row * 19, 17, 17)
+                box = pygame.Rect(44 + col * 19, 563 + row * 19, 17, 17)
                 pos = (row, col)
                 color = STEEL if tile else LINE
                 if pos == session.player_pos:
@@ -714,6 +1029,8 @@ class GameRenderer:
                         if door:
                             pygame.draw.line(surface, RECESS, box.center, tip, 2)
         new_loops = 0
+        seals_exits = False
+        wakes_guard = False
         if hovered_pos is not None:
             occupied = session.board[hovered_pos[0]][hovered_pos[1]] is not None
             walking = occupied and hovered_pos != session.player_pos
@@ -721,12 +1038,19 @@ class GameRenderer:
                 ok, reason = session.chisel_preview(session.player_pos, hovered_pos)
                 if ok:
                     new_loops = int(hovered_pos in reachable_rooms(session.board, session.player_pos))
+                    if session.guard_pos is None and not new_loops:
+                        other_side = reachable_rooms(session.board, hovered_pos)
+                        wakes_guard = any(altar.pos in other_side for altar in session.level.altars)
             elif walking:
                 ok, reason = session.movement_preview(hovered_pos)
             elif seal_direction is not None:
                 ok, reason = session.preview_with_seal(hovered_pos, seal_direction)
+                if not ok and session.geometry_preview_with_seal(hovered_pos, seal_direction)[0]:
+                    ok, reason = True, "not_at_build_frontier"
             else:
                 ok, reason = session.preview(hovered_pos)
+                if mvp and not ok and session.geometry_preview(hovered_pos)[0]:
+                    ok, reason = True, "not_at_build_frontier"
             rect = cell_rect(hovered_pos).inflate(-4, -4)
             card = session.selected_card
             if card is not None and not chisel_mode and session.board[hovered_pos[0]][hovered_pos[1]] is None:
@@ -734,22 +1058,34 @@ class GameRenderer:
                 self.tile_art(surface, rect, doors, TEAL if ok else RED)
                 if ok and mvp:
                     new_loops = loops_closed_by_room(session.board, hovered_pos, doors)
-            border = (BUILD_GREEN if ok else RED) if card is not None or walking or chisel_mode else MUTED
+                    seals_exits, wakes_guard = session.build_warnings(hovered_pos, doors)
+            border = (TEAL if reason == "not_at_build_frontier" else BUILD_GREEN if ok else RED) if card is not None or walking or chisel_mode else MUTED
             pygame.draw.rect(surface, border, rect, width=3, border_radius=7)
         else:
             reason = "no_normal_placement" if session.blocked else "no_card_selected"
+        if event_feedback is not None and not terminal:
+            clip = surface.get_clip()
+            surface.set_clip(BOARD_RECT.clip(clip))
+            event_effect(surface, cell_rect(event_feedback.pos), event_feedback, feedback_age, self.room_events)
+            surface.set_clip(clip)
         if mvp and session.guard_pos is not None and not terminal:
             guard = cell_rect(session.guard_pos)
             if session.guard_next is not None:
                 target = cell_rect(session.guard_next)
-                pygame.draw.rect(surface, GOLD, target.inflate(-8, -8), width=2, border_radius=6)
+                ring = target.inflate(-8, -8)
+                pygame.draw.rect(surface, RECESS, ring.inflate(4, 4), width=6, border_radius=7)
+                pygame.draw.rect(surface, GOLD, ring, width=3, border_radius=6)
                 direction = (pygame.Vector2(target.center) - guard.center).normalize()
                 side = direction.rotate(90)
-                tip = pygame.Vector2(target.center) - direction * 16
-                pygame.draw.line(surface, GOLD, tip - direction * 24, tip, 4)
-                pygame.draw.polygon(surface, GOLD, [tip, tip - direction * 10 + side * 6,
-                                                     tip - direction * 10 - side * 6])
-            surface.blit(self.guard_sprite, self.guard_sprite.get_rect(topright=(guard.right - 5, guard.top + 3)))
+                tip = pygame.Vector2(target.center) - direction * 17
+                neck = tip - direction * 17
+                tail = tip - direction * 37
+                arrow = [tip, neck + side * 12, neck + side * 5, tail + side * 5,
+                         tail - side * 5, neck - side * 5, neck - side * 12]
+                pygame.draw.polygon(surface, GOLD, arrow)
+                pygame.draw.polygon(surface, RECESS, arrow, width=2)
+            center = guard.center if session.player_pos != session.guard_pos else (guard.right - 23, guard.top + 26)
+            surface.blit(self.guard_sprite, self.guard_sprite.get_rect(center=center))
         player_center = cell_rect(session.player_pos).center
         explorer = self.objects["explorer"]
         surface.blit(explorer, explorer.get_rect(center=player_center))
@@ -768,11 +1104,13 @@ class GameRenderer:
             self.text(surface, ROOM_NAMES.get(card.kind, card.kind.replace('_', ' ').title()),
                       (rect.x + 122, rect.y + 12), font=self.heading_font)
             trait, trait_color = ROOM_TRAITS.get(card.kind, ("Unknown event", MUTED))
+            if isinstance(session, TutorialSession):
+                trait, trait_color = "Scripted tutorial event", GOLD
             self.text(surface, trait, (rect.x + 122, rect.y + 38), trait_color, self.small_font)
             self.card_event_odds(surface, rect, event_weights[card.kind])
             pygame.draw.line(surface, LINE, (rect.x + 122, rect.y + 107), (rect.right - 16, rect.y + 107))
             if selected and seal_direction is not None:
-                playable = bool(legal)
+                playable = bool(planning)
                 fit_message = "Seal fits this rotation" if playable else "No fit with this seal"
             else:
                 playable = index in session.draw_result.legal_card_indices
@@ -783,11 +1121,14 @@ class GameRenderer:
                       (rect.right - 112, rect.y + 117), MUTED, self.small_font)
             self.text(surface, str(index + 1), (rect.right - 25, rect.y + 15), GOLD if selected else MUTED)
 
-        if session.blocked:
+        sealed = mvp and session.blocked and session.exits_sealed(session.board, session.player_pos)
+        blocked_hint = ("All exits are sealed. Press N to restart." if sealed else
+                        "No room shape fits your open exits. You can still walk through built rooms or restart.")
+        if session.blocked and not session.draw_result.cards:
             rect = pygame.Rect(806, 112, 442, 456)
             stone_frame(surface, rect, RECESS, RED, cut=10)
             self.text(surface, "No normal placement", (830, 270), RED, self.heading_font)
-            self.wrapped_text(surface, "No room shape fits your open exits. You can still walk through built rooms or restart.",
+            self.wrapped_text(surface, blocked_hint,
                               pygame.Rect(830, 312, 390, 60), MUTED)
 
         self.button(surface, ROTATE_RECT, "Rotate  [R]", session.selected_card is not None and not terminal)
@@ -836,7 +1177,8 @@ class GameRenderer:
         elif hovered_pos is not None and walking:
             feedback = movement_message(reason)
         elif hovered_pos is not None and session.selected_card is not None:
-            feedback = tool_message(reason) if seal_direction is not None else placement_message(reason)
+            feedback = (placement_message(reason) if reason == "not_at_build_frontier" or seal_direction is None
+                        else tool_message(reason))
         if new_loops:
             feedback = Message("{action} Closes {n} new loop." if new_loops == 1 else "{action} Closes {n} new loops.",
                                action=feedback, n=new_loops)
@@ -845,33 +1187,46 @@ class GameRenderer:
             if hovered_tile and hovered_tile.kind == "rubble":
                 feedback = movement_message("rubble")
             elif hovered_tile and hovered_tile.kind == "spring" and not chisel_mode:
-                feedback = ("The well is dry. The room is still passable." if hovered_tile.event_resolved
-                            else "Healing well. Connect a path and enter to recover 1 HP once.")
-        if session.blocked and hovered_pos is None and not chisel_mode:
+                if hovered_tile.event_resolved:
+                    feedback = "The well is dry. The room is still passable."
+                elif hovered_pos in reachable:
+                    feedback = Message("Well {cell} heals 1 HP", cell=cell_label(hovered_pos))
+                else:
+                    feedback = "Healing well. Connect a path and enter to recover 1 HP once."
+        if sealed:
+            feedback = blocked_hint
+        elif session.blocked and hovered_pos is None and not chisel_mode:
             feedback = ("No normal room fits. You can walk, use a tool or restart." if mvp
                         else placement_message("no_normal_placement"))
         if session.hp_depleted and not mvp:
             feedback = "HP depleted (0). Press N to restart."
+        if seals_exits:
+            feedback = "This build will seal the last exit."
+        elif wakes_guard:
+            feedback = "This action will wake the guard."
         stone_frame(surface, (218, 660, 565, 48), RECESS)
         if session.trapped_cache and not terminal:
             gain = session.cache_gain
-            enabled = session.resources.hp > 1 and gain > 0
-            self.text(surface, "Barbed chest", (230, 664), GOLD)
+            self.text(surface, feedback if seals_exits or wakes_guard or reason == "guard_blocks_route" else "Barbed chest",
+                      (230, 664), GOLD)
             detail = Message("Pay 1 HP for {gain} Supplies, or leave it here.", gain=gain)
             if session.resources.hp <= 1:
                 detail = "Opening costs 1 HP. Return with at least 2 HP."
             elif not gain:
                 detail = "Your pack is full. You can return later."
             self.text(surface, detail, (230, 687), MUTED, self.small_font)
-            self.button(surface, CACHE_RECT, "Open chest  [E]", enabled)
         else:
-            self.wrapped_text(surface, feedback, pygame.Rect(230, 665, 540, 44), RED if session.blocked else TEXT)
-        footer = ("1/2/3 Select  R/Q Rotate  Click Build/Walk  Arrows/WASD Walk  F Seal  C Chisel  H Help  F11 Fullscreen  N Restart  Esc Quit"
+            self.wrapped_text(surface, feedback, pygame.Rect(230, 665, 540, 44),
+                              RED if session.blocked or seals_exits else TEXT)
+        footer = ("1/2/3 Select  R/Q Rotate  Click Build/Plan  G Go  Enter Build  Esc Cancel/Quit  F Seal  C Chisel  H Help  N Restart"
                   if mvp else "1/2/3 Select  R/Q Rotate  Click Build/Walk  Arrows/WASD Walk  F11 Fullscreen  N Restart  Esc Quit")
         self.text(surface, footer,
                   (30, 719), MUTED, self.small_font)
         if event_feedback is not None and not terminal:
-            self.event_toast(surface, event_feedback, feedback_age)
+            avoid = cache_prompt_rect(session.player_pos) if session.trapped_cache else None
+            self.event_toast(surface, event_feedback, feedback_age, avoid)
+        if session.trapped_cache and not terminal:
+            self.cache_prompt(surface, session)
         if terminal:
             shade = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
             shade.fill((5, 11, 17, 205))

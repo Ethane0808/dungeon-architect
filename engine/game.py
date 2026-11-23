@@ -7,7 +7,7 @@ and auto-entry, with free walking and bounded resources. Objectives are later wo
 from dataclasses import replace
 from random import Random
 
-from engine.cards import Card, CardConfig, Position, draw_cards, load_card_config
+from engine.cards import Card, CardConfig, DrawResult, Position, draw_cards, load_card_config
 from engine.directions import DIRECTIONS, OPPOSITE, is_in_bounds, neighbor_pos
 from engine.events import EventConfig, EventNotification, load_event_config, resolve_event
 from engine.models import BOARD_SIZE, Tile, make_empty_board, validate_board
@@ -184,13 +184,19 @@ class BuildSession:
             return False, reason
         card = self.selected_card
         assert card is not None
+        self._build_room(pos, card, deal_next=True)
+        return True, "ok"
+
+    def _build_room(self, pos: Position, card: Card, *, deal_next: bool) -> None:
+        """Enter a validated room. The MVP deals after the guard has moved."""
         next_board = [row.copy() for row in self.board]
         tile = Tile(card.kind, card.doors, event_category=card.event_category)
         entered, resources, notification = self._prepare_entry(tile, pos)
         next_board[pos[0]][pos[1]] = entered
         rng_state = self.rng.getstate()
         try:
-            next_draw = draw_cards(next_board, pos, rng=self.rng, config=self.config)
+            next_draw = (draw_cards(next_board, pos, rng=self.rng, config=self.config)
+                         if deal_next else DrawResult("blocked", (), ()))
         except Exception:
             self.rng.setstate(rng_state)
             raise
@@ -203,4 +209,3 @@ class BuildSession:
         self.resources = resources
         if notification is not None:
             self.current_event = notification
-        return True, "ok"

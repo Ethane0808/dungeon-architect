@@ -12,12 +12,15 @@ from engine.game import BuildSession
 from engine.directions import DIRECTIONS, OPPOSITE, neighbor_pos, rotate_doors
 from engine.models import Tile, make_empty_board
 from engine.resources import Resources
+from engine.events import EventNotification
+from ui.event_art import event_effect
 from tests.test_events import category_session
 from ui.app import GameApp, display_viewport
 from ui.screens import (
     BOARD_RECT, CARD_RECTS, EVENT_FEEDBACK_MS, HELP_RECT, HP_RECT, RESTART_RECT, ROOM_TRAITS,
     ROTATE_RECT, SUPPLIES_RECT, WINDOW_SIZE, MUTED, TEAL, card_at_pixel, cell_at_pixel,
     cell_rect, placement_message, ENTER_RECT, GUIDE_RECT, GUIDE_CLOSE_RECT,
+    persistent_event_marker,
 )
 
 
@@ -385,7 +388,7 @@ def test_success_feedback_remains_visible_under_stationary_pointer(app, screen):
     assert app.message.startswith("Built ")
     with patch.object(app.renderer, "wrapped_text", wraps=app.renderer.wrapped_text) as feedback:
         app.draw(screen)
-    assert feedback.call_args.args[1] == app.message
+    assert any(call.args[1] == app.message for call in feedback.call_args_list)
 
 
 @pytest.mark.parametrize("event_type", [pygame.WINDOWLEAVE, pygame.WINDOWFOCUSLOST])
@@ -572,6 +575,85 @@ def test_zero_hp_hud_and_capped_rewards_render_safely(app, screen):
     labels = [call.args[1] for call in texts.call_args_list]
     assert "Supplies +1" not in labels
     assert any(label.startswith("No resource change") for label in labels)
+
+
+@pytest.mark.parametrize("supplies", [2, 5])
+def test_supply_chest_opens_once_and_restart_clears_animation(app, screen, monkeypatch, supplies):
+    monkeypatch.setattr(pygame.time, "get_ticks", lambda: 1000)
+    session = app.session = category_session("supply", resources=Resources(5, 5, supplies, 5))
+    start = session.player_pos
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    assert session.resources.supplies == min(5, supplies + 1)
+    assert session.board[option.pos[0]][option.pos[1]].event_resolved
+    before = deepcopy(session.board), session.resources, session.rng.getstate(), session.build_turn
+    frames = []
+    for elapsed in (0, 275, 600):
+        monkeypatch.setattr(pygame.time, "get_ticks", lambda: 1000 + elapsed)
+        app.draw(screen)
+        rect = cell_rect(option.pos)
+        chest_rect = pygame.Rect(rect.centerx + 7, rect.centery - 2, 24, 24)
+        frames.append(pygame.image.tobytes(screen.subsurface(chest_rect), "RGB"))
+    assert len(set(frames)) == 3
+    assert (session.board, session.resources, session.rng.getstate(), session.build_turn) == before
+    if supplies == 5:
+        assert "Supplies full" in labels(app, screen)
+    click(app, cell_rect(start).center)
+    click(app, cell_rect(option.pos).center)
+    assert app.event_feedback_started_at == 1000
+    assert session.resources == before[1]
+    key(app, pygame.K_n)
+    assert app.event_feedback is None and session.build_turn == 0
+    assert session.board[option.pos[0]][option.pos[1]] is None
+    # Restart during the next opening also cannot finish awarding the old reward.
+    option = select_legal(app)
+    click(app, cell_rect(option.pos).center)
+    key(app, pygame.K_n)
+    app.draw(screen)
+    assert session.resources.supplies == supplies and app.event_feedback is None
+
+
+@pytest.mark.parametrize("category,icon", [
+    ("danger", "dart"), ("danger", "falling-stone"), ("danger", "thorn"),
+    ("danger", "barbed-cache"), ("supply", "supply"), ("relic", "relic"),
+    ("spring", ""), ("medkit", ""), ("altar", ""), ("guard", ""),
+])
+def test_event_effects_animate_then_expire_without_changing_event(app, category, icon):
+    notice = EventNotification((3, 3), category, "Event", 0, 0, icon=icon)
+    before = deepcopy(notice)
+    frames = []
+    canvas = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+    for age in (100, 500, 1100):
+        canvas.fill((0, 0, 0, 0))
+        event_effect(canvas, cell_rect(notice.pos), notice, age, app.renderer.room_events)
+        frames.append(pygame.image.tobytes(canvas, "RGBA"))
+    assert frames[0] != frames[1]
+    first = pygame.image.frombytes(frames[0], WINDOW_SIZE, "RGBA")
+    assert first.get_bounding_rect().width >= 90
+    assert canvas.get_bounding_rect().size == (0, 0)
+    assert notice == before
+
+
+def test_quiet_event_has_text_feedback_but_no_map_effect(app):
+    notice = EventNotification((3, 3), "neutral", "Dust settles.", 0, 0, icon="neutral")
+    canvas = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+
+    event_effect(canvas, cell_rect(notice.pos), notice, 100, app.renderer.room_events)
+
+    assert canvas.get_bounding_rect().size == (0, 0)
+
+
+@pytest.mark.parametrize("tile,expected", [
+    (Tile("room", (True,) * 4, event_category="danger", event_resolved=True, event_icon="dart"), None),
+    (Tile("room", (True,) * 4, event_category="danger", event_resolved=True, event_icon="falling-stone"), None),
+    (Tile("room", (True,) * 4, event_category="danger", event_resolved=True, event_icon="thorn"), None),
+    (Tile("room", (True,) * 4, event_category="danger", event_resolved=True,
+          event_icon="barbed-cache", trapped_cache=2), "barbed-cache"),
+    (Tile("room", (True,) * 4, event_category="neutral", event_resolved=True), None),
+    (Tile("room", (True,) * 4, event_category="relic", event_resolved=True, event_icon="relic"), "relic"),
+])
+def test_only_live_or_lasting_event_objects_keep_map_markers(tile, expected):
+    assert persistent_event_marker(tile) == expected
 
 
 def test_rendering_hover_feedback_never_resolves_an_unvisited_event(app, screen):

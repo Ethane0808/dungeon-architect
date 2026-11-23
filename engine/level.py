@@ -47,6 +47,7 @@ class LevelConfig:
     first_altar_supplies: int = 1
     rubble_count: int = 0
     spring_count: int = 0
+    guard_build_limit: int = 11
 
     def __post_init__(self) -> None:
         if not isinstance(self.start, SpecialRoom) or self.start.kind != "start":
@@ -59,6 +60,8 @@ class LevelConfig:
             raise ValueError("At least one altar SpecialRoom is required in an immutable tuple")
         if type(self.first_altar_supplies) is not int or self.first_altar_supplies < 0:
             raise ValueError("first_altar_supplies must be a nonnegative integer")
+        if type(self.guard_build_limit) is not int or self.guard_build_limit < 1:
+            raise ValueError("guard_build_limit must be a positive integer")
         if any(type(n) is not int or n < 0 for n in (self.rubble_count, self.spring_count)):
             raise ValueError("Terrain counts must be nonnegative integers")
         rooms = (self.start, *self.altars, self.core)
@@ -172,6 +175,7 @@ class LevelConfig:
                 first_altar_supplies=objectives.get("first_altar_supplies", 1),
                 rubble_count=data.get("terrain", {}).get("rubble_count", 0),
                 spring_count=data.get("terrain", {}).get("spring_count", 0),
+                guard_build_limit=data.get("guard", {}).get("build_limit", 11),
             )
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError(f"Invalid level configuration: {error}") from error

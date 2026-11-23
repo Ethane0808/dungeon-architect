@@ -15,6 +15,7 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 | `main.py` | 解析 `--seed`（省略時隨機選取）、啟動與清理 pygame。匯入模組時不開視窗。 |
 | `engine/directions.py`、`engine/models.py` | 方位、旋轉、`Tile`、棋盤與通行狀態。 |
 | `engine/placement.py` | BFS 可達性、候選空格與嚴格拼接。 |
+| `engine/navigation.py` | 純 Python 的施工入口判定、穩定 BFS 與最近入口路由，不依賴 pygame。 |
 | `engine/cards.py` | 設定驗證、合法放置枚舉、加權抽卡及隱藏事件抽選。 |
 | `engine/game.py` | 保留 `BuildSession` 的 Phase 4 建造與事件控制器，供 MVP 擴充及既有測試重用。 |
 | `engine/mvp.py` | `MvpSession(BuildSession)` 串接固定關卡、目標、工具、勝負、原子操作與重開。 |
@@ -56,13 +57,19 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 
 `BuildSession.preview` 和 `legal_cells` 只讀狀態。選卡和旋轉只更新預覽狀態，保留棋盤、手牌、回合與亂數。 `place` 以目前棋盤重新驗證，在暫存資料準備新房間、自動進入事件及下一手，成功才一次更新棋盤、角色、手牌、回合、資源及事件通知。若事件準備失敗則不提交；若抽下一手失敗則另還原亂數狀態。 `restart` 以原 seed 與初始資源快照重建整局。
 
+`BuildSession` 保留原沙盒的全圖建造語義。`MvpSession.geometry_preview`／`planning_cells` 驗證全圖幾何與既有守衛施工路線，供抽牌保底和青色規劃格使用；`preview`／`legal_cells` 再要求 `is_local_build_source`，玩家必須位於相鄰且門對門的入口。封門版本以封門後的 doors 做相同分層驗證。`place` 與 `place_with_seal` 在 live state 及私有 candidate 都重驗現地條件，遠端失敗不改棋盤、玩家、資源、工具、手牌、回合或 RNG。
+
+`build_entries` 只接受可通行、在玩家可達集合且與新房門對門的既有房。`shortest_path` 透過 `connected_neighbors` 依 N/E/S/W 做 BFS，路徑含起點與入口、不含未建造目標。`route_to_build_site` 依 `(步數, entry_row, entry_col)` 選入口。UI 的不可變 `BuildPlan` 保存目標、入口、路徑、卡片索引、旋轉與封門方向；任何相關選擇改變都取消計畫。
+
 ### 5.4 移動與首次進房事件
 
 `movement_preview(pos)` 回傳 `(ok, reason)`，確認目標相鄰、在地圖內、兩側有門且可通行，不改狀態。`move(pos)` 再驗證並移動一格；只在首次進入普通事件房時更新該房間的 `event_resolved`、`event_outcome`、資源與 `current_event`。起點、祭壇與核心不套用普通事件。普通移動保留手牌、旋轉方向、建造回合與抽牌亂數狀態。
 
+pygame 自動導航每 250ms 最多取 `BuildPlan.path` 的下一格，並呼叫正常的 `MvpSession.move()`，不直接寫入玩家位置。下一格是 `guard_pos`／`guard_next` 時先停；成功一步後若 HP、事件、祭壇或終局改變也停。到入口只顯示確認提示，Enter 才呼叫正式建造。Esc、重開、大廳與終局會清除計畫；手動移動與道具操作會停止自動行走。
+
 `place` 沿用 Phase 3 自動進房，與 `move` 共用 `_prepare_entry`，避免放置與進房各發一次獎勵。`Tile.event_outcome` 記錄套用上下限後的實際 `hp`／`supplies` 變化；已滿而增加 0 也會標記結算。`current_event` 保留最後一次新事件，重訪與無效操作不更新，重開清除。
 
-`EventConfig.from_mapping(data)` 讀取 `events.categories` 與 `events.outcomes`。每類事件可設基本效果與一組 `variants`，各項可指定 `message`、整數 `hp_delta`、`supplies_delta` 與非負整數 `trapped_cache`。`resolve_event(category, pos, resources, config, seed)` 以局種子、座標與類別建立獨立亂數來源，從基本效果與各變體中等機率選取一項，並回傳資源快照與通知。省略 seed 時使用基本效果。首次進房後，`Tile.trapped_cache` 保存未開箱的補給數量，成功開箱後歸零。開箱產生獨立的事件通知。
+`EventConfig.from_mapping(data)` 讀取 `events.categories` 與 `events.outcomes`。每類事件可設基本效果與一組 `variants`，各項可指定 `message`、整數 `hp_delta`、`supplies_delta` 與非負整數 `trapped_cache`。`resolve_event(category, pos, resources, config, seed)` 以局種子、座標與類別建立獨立亂數來源，按各項的正整數 `weight`（預設 1）從基本效果與各變體中選取一項，並回傳資源快照與通知。省略 seed 時使用基本效果。首次進房後，`Tile.trapped_cache` 保存未開箱的補給數量，成功開箱後歸零。開箱產生獨立的事件通知。
 
 房型對類別的機率由 `weights_by_kind` 與 session RNG 決定；事件目前直接套用每類設定的效果，不另外抽亂數。因此固定 seed 與相同操作重現相同事件，且不改變既有牌序。卡面只呈現房型傾向，不公開已抽定的精確類別；預覽不會重新抽取或結算效果。
 
@@ -82,11 +89,11 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 
 ### 5.6 關卡與目標 API
 
-`SpecialRoom(kind, pos, doors)` 與 `LevelConfig(start, altars, core, first_altar_supplies=1)` 是不可變資料。`load_level_config()` 讀取 `objectives.start`／`core` 的 `{pos, doors}`、`altars` 的 `[{id, pos, doors}, ...]` 與第一座祭壇補給。祭壇至少一座，預設兩座；數量、座標與門向皆可調整。
+`SpecialRoom(kind, pos, doors)` 與 `LevelConfig(start, altars, core, first_altar_supplies=1, ..., guard_build_limit=11)` 是不可變資料。`load_level_config()` 讀取 `objectives.start`／`core` 的 `{pos, doors}`、`altars` 的 `[{id, pos, doors}, ...]`、第一座祭壇補給及 `guard.build_limit`。祭壇至少一座，預設兩座；數量、座標、門向與守衛建造門檻皆可調整。
 
 驗證拒絕非 7×7、非整數座標、非布林門向、門朝外、重疊、重複名稱與固定鄰房門牆衝突。潛在路線驗證把空格視為可配置通路：所有祭壇需在不穿過鎖定核心的條件下有潛在路線，核心解鎖後需有潛在路線。這不是牌序或全局可解性保證。`make_board()` 每次建立全新 Tile，核心為 locked，祭壇尚未啟動。
 
-`MvpSession(..., level=None, tools=None)` 預設載入關卡與工具，也保留 `BuildSession` 的 seed、卡片、資源與事件設定注入介面。`activated_altars` 是實際進入過的祭壇 id 集合；不是 BFS 可達集合。`core_unlocked` 只在所有設定祭壇都已啟動時成立；進入解鎖核心才轉為 WON。第一次啟動祭壇給設定的 Supplies，受上限限制且不重複發放。
+`MvpSession(..., level=None, tools=None)` 預設載入關卡與工具，也保留 `BuildSession` 的 seed、卡片、資源與事件設定注入介面。`activated_altars` 是實際進入過的祭壇 id 集合；不是 BFS 可達集合。首次讓祭壇進入可達集合或達到 `guard_build_limit` 時，`guard_wake_reason` 記錄 `altar` 或 `construction`，守衛先出現並預告下一步。`core_unlocked` 只在所有設定祭壇都已啟動時成立；進入解鎖核心才轉為 WON。第一次啟動祭壇給設定的 Supplies，受上限限制且不重複發放。
 
 ### 5.7 工具 API
 
@@ -94,7 +101,8 @@ Python 須占全部自行編寫原始碼 **嚴格大於 50%**。若教師未指�
 
 | API | 行為 |
 |---|---|
-| `preview_with_seal(pos, direction)`／`legal_cells_with_seal(direction)` | 依選中卡當前方向封一扇門，保留事件類別，重驗全部邊、可達入口、費用與次數；不改狀態。 |
+| `geometry_preview_with_seal`／`planning_cells_with_seal` | 依封門後 doors 驗證費用、全圖幾何與可規劃位置；不改狀態。 |
+| `preview_with_seal(pos, direction)`／`legal_cells_with_seal(direction)` | 在全圖驗證後再要求玩家位於相鄰門對門入口；不改狀態。 |
 | `place_with_seal(pos, direction)` | 與建造、自動進房、事件及下一手一起提交費用和次數；失敗完全保留原狀態。 |
 | `chisel_preview(source, target)` | 來源須可達，雙方是相鄰既有未鎖定房間，共用邊須牆對牆。 |
 | `chisel(source, target)` | 同時開兩側門，扣費及計次，重新計算可達與合法位置；不自動移入、不啟動祭壇、不觸發事件。 |

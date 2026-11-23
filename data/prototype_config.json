@@ -60,6 +60,7 @@
   },
 
   "terrain": { "rubble_count": 2, "spring_count": 1 },
+  "guard": { "build_limit": 11 },
 
   "objectives": {
     "_comment": "[PROVISIONAL] 祭壇與核心位置（P01/P02）；固定關卡布局",

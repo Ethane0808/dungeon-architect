@@ -11,12 +11,14 @@ from dataclasses import replace
 from enum import Enum
 from random import Random
 
-from engine.cards import CardConfig, Position, draw_cards, enumerate_legal_placements
+from engine.cards import Card, CardConfig, Doors, Position, draw_cards, enumerate_legal_placements
+from engine.directions import DIRECTIONS, neighbor_pos
 from engine.events import EventConfig, EventNotification
 from engine.game import BuildSession
 from engine.level import LevelConfig, load_level_config
 from engine.models import Board, Tile
 from engine.messages import Message
+from engine.navigation import is_local_build_source
 from engine.placement import can_place, connected_neighbors, frontier_cells, loops_closed_by_room, reachable_rooms
 from engine.resources import Resources
 from engine.tools import ToolConfig, chisel_board, chisel_preview, load_tool_config, seal_card
@@ -44,24 +46,27 @@ class MvpSession(BuildSession):
     def restart(self) -> None:
         board = self.level.make_board(self.seed)
         rng = Random(self.seed)
-        draw = draw_cards(board, self.level.start.pos, rng=rng, config=self.config)
         self.board = board
         self.player_pos = self.level.start.pos
         self.rng = rng
-        self.draw_result = draw
         self.build_turn = 0
         self.selected_index = None
-        self.rotations = [0] * len(draw.cards)
         self.resources = self.initial_resources
         self.current_event = None
         self.loops_closed = 0
         self.guard_pos: Position | None = None
         self.guard_next: Position | None = None
+        self.guard_wake_reason: str | None = None
         self.activated_altars: frozenset[str] = frozenset()
         self.tool_uses = {"door_seal": 0, "emergency_chisel": 0}
         self.status = GameStatus.LOST if self.resources.hp_depleted else GameStatus.PLAYING
         self.loss_reason = "HP reached zero." if self.resources.hp_depleted else None
         self.objective_message = "Enter every altar, then reach the unlocked core."
+        if self.status == GameStatus.PLAYING:
+            self._wake_guard()
+        excluded = () if self.guard_pos is None else (self.guard_pos,)
+        self.draw_result = draw_cards(board, self.player_pos, rng=rng, config=self.config, locked_specials=excluded)
+        self.rotations = [0] * len(self.draw_result.cards)
 
     @property
     def core_unlocked(self) -> bool:
@@ -92,13 +97,78 @@ class MvpSession(BuildSession):
             self.current_event = EventNotification(self.player_pos, "medkit", "Used a medkit to recover 1 HP.", 1, -2)
         return ok, reason
 
-    def preview(self, pos: Position) -> tuple[bool, str]:
+    def geometry_preview(self, pos: Position) -> tuple[bool, str]:
+        """Validate a selected card anywhere on the reachable construction frontier."""
         if self.status != GameStatus.PLAYING:
             return False, "game_over"
-        return super().preview(pos)
+        card = self.selected_card
+        if card is None:
+            return BuildSession.preview(self, pos)
+        return self._build_preview(pos, card)
+
+    def preview(self, pos: Position) -> tuple[bool, str]:
+        """Validate an actual build, including the player's current entrance."""
+        ok, reason = self.geometry_preview(pos)
+        if not ok:
+            return False, reason
+        card = self.selected_card
+        assert card is not None
+        if not is_local_build_source(self.board, self.player_pos, pos, card.doors):
+            return False, "not_at_build_frontier"
+        return True, "ok"
+
+    def _build_preview(self, pos: Position, card: Card) -> tuple[bool, str]:
+        tile = Tile(card.kind, card.doors, event_category=card.event_category)
+        result = can_place(tile, pos, self.board, reachable_rooms(self.board, self.player_pos))
+        if result[0] and self.guard_pos is not None:
+            accessible = reachable_rooms(self.board, self.player_pos, (self.guard_pos,))
+            if pos not in frontier_cells(self.board, accessible):
+                return False, "guard_blocks_route"
+        return result
+
+    def planning_cells(self) -> set[Position]:
+        """Return globally legal previews without changing the draw guarantee."""
+        if self.status != GameStatus.PLAYING:
+            return set()
+        cells = super().legal_cells()
+        if cells and self.guard_pos is not None:
+            cells &= frontier_cells(self.board, reachable_rooms(self.board, self.player_pos, (self.guard_pos,)))
+        return cells
 
     def legal_cells(self) -> set[Position]:
-        return super().legal_cells() if self.status == GameStatus.PLAYING else set()
+        """Return only cells buildable from the player's current room."""
+        card = self.selected_card
+        if card is None:
+            return set()
+        return {
+            pos for pos in self.planning_cells()
+            if is_local_build_source(self.board, self.player_pos, pos, card.doors)
+        }
+
+    def exits_sealed(self, board: Board, origin: Position) -> bool:
+        """Prove a closed region even if the player could afford every remaining chisel."""
+        reachable = reachable_rooms(board, origin)
+        if frontier_cells(board, reachable):
+            return False
+        if self.level.core.pos in reachable or any(
+            altar.pos in reachable and altar.kind not in self.activated_altars for altar in self.level.altars
+        ):
+            return False
+        if self.tool_uses["emergency_chisel"] < self.tools.emergency_chisel.max_uses_per_game:
+            for source in reachable:
+                for side in DIRECTIONS:
+                    target = neighbor_pos(*source, side)
+                    if target not in reachable and chisel_preview(board, source, target, reachable)[0]:
+                        return False
+        return True
+
+    def build_warnings(self, pos: Position, doors: Doors) -> tuple[bool, bool]:
+        """Inspect only visible topology for a legal build preview."""
+        board = self.board.copy()
+        board[pos[0]] = board[pos[0]].copy()
+        board[pos[0]][pos[1]] = Tile("preview", doors)
+        wakes = self.guard_pos is None and self._alarm_trigger(board, self.build_turn + 1) is not None
+        return self.exits_sealed(board, pos), wakes
 
     def movement_preview(self, pos: Position) -> tuple[bool, str]:
         if self.status != GameStatus.PLAYING:
@@ -122,15 +192,17 @@ class MvpSession(BuildSession):
     def _refresh_draw(self) -> None:
         """Refresh geometry without rerolling an existing hand during exploration.
 
-        A chisel/altar unlock can recover a blocked empty hand. Only that case
-        deals cards; it uses the same protected draw API and has no retry loop.
+        Deal after construction or when new access restores an empty hand.
+        Existing cards keep their rotations while the guard and exits change.
         """
-        placements = enumerate_legal_placements(self.board, self.player_pos, self.config)
-        if placements and not self.draw_result.cards:
-            self.draw_result = draw_cards(self.board, self.player_pos, rng=self.rng, config=self.config)
+        excluded = () if self.guard_pos is None else (self.guard_pos,)
+        if not self.draw_result.cards:
+            self.draw_result = draw_cards(self.board, self.player_pos, rng=self.rng, config=self.config,
+                                          locked_specials=excluded)
             self.selected_index = None
             self.rotations = [0] * len(self.draw_result.cards)
         else:
+            placements = enumerate_legal_placements(self.board, self.player_pos, self.config, excluded)
             self.draw_result = replace(self.draw_result, status="ready" if placements else "blocked",
                                        legal_placements=placements)
 
@@ -152,8 +224,31 @@ class MvpSession(BuildSession):
                     queue.append(neighbor)
         return []
 
+    def _alarm_trigger(self, board: Board, build_count: int) -> str | None:
+        reachable = reachable_rooms(board, self.level.start.pos)
+        if any(altar.pos in reachable for altar in self.level.altars):
+            return "altar"
+        return "construction" if build_count >= self.level.guard_build_limit else None
+
+    def _wake_guard(self) -> None:
+        """Place the guard and telegraph its first step without moving or striking."""
+        if self.guard_pos is not None:
+            return
+        self.guard_wake_reason = self._alarm_trigger(self.board, self.build_turn)
+        if self.guard_wake_reason is None:
+            return
+        route = self._guard_route(self.level.start.pos)
+        if len(route) > 1:
+            index = max(0, len(route) - 4)
+            self.guard_pos, self.guard_next = route[index:index + 2]
+        else:
+            # A custom starting layout or a chisel can connect an altar from Start.
+            self.guard_pos = next(connected_neighbors(self.board, self.player_pos), self.player_pos)
+            self.guard_next = self.player_pos if self.guard_pos != self.player_pos else None
+
     def _update_guard(self, previous_event, build_source: Position | None) -> None:
         if self.guard_pos is None:
+            self._wake_guard()
             return
         hit = self.guard_pos == self.player_pos
         if self.guard_next is not None:
@@ -195,10 +290,6 @@ class MvpSession(BuildSession):
             self.resources = before.apply(supplies_delta=reward)
             actual = self.resources.supplies - before.supplies
             self.objective_message = Message("{altar} activated.", altar=altar.kind.replace('_', ' ').title())
-            if first:
-                route = self._guard_route(self.level.start.pos)
-                self.guard_pos = route[max(0, len(route) - 4)] if route else self.level.start.pos
-                self.objective_message = Message("{message} The guard awakens!", message=self.objective_message)
             if actual:
                 self.objective_message = Message("{message} Supplies {amount:+d}.", message=self.objective_message, amount=actual)
             self.current_event = EventNotification(pos, "altar", self.objective_message, 0, actual)
@@ -254,9 +345,12 @@ class MvpSession(BuildSession):
         if not ok:
             return False, reason
         candidate = self._candidate()
-        ok, reason = BuildSession.place(candidate, pos)
+        ok, reason = candidate.preview(pos)
         if not ok:
             return False, reason
+        card = candidate.selected_card
+        assert card is not None
+        candidate._build_room(pos, card, deal_next=False)
         candidate._finish_build(pos, self)
         self._commit(candidate)
         return True, "ok"
@@ -271,7 +365,8 @@ class MvpSession(BuildSession):
             return False, "insufficient_supplies"
         return True, "ok"
 
-    def preview_with_seal(self, pos: Position, direction: int) -> tuple[bool, str]:
+    def geometry_preview_with_seal(self, pos: Position, direction: int) -> tuple[bool, str]:
+        """Validate tool budget and sealed geometry without requiring local presence."""
         ok, reason = self._tool_budget("door_seal")
         if not ok:
             return False, reason
@@ -282,29 +377,51 @@ class MvpSession(BuildSession):
             sealed = seal_card(card, direction)
         except ValueError as error:
             return False, str(error)
-        return can_place(Tile(sealed.kind, sealed.doors, event_category=sealed.event_category), pos,
-                         self.board, reachable_rooms(self.board, self.player_pos))
+        return self._build_preview(pos, sealed)
+
+    def preview_with_seal(self, pos: Position, direction: int) -> tuple[bool, str]:
+        ok, reason = self.geometry_preview_with_seal(pos, direction)
+        if not ok:
+            return False, reason
+        assert self.selected_card is not None
+        sealed = seal_card(self.selected_card, direction)
+        if not is_local_build_source(self.board, self.player_pos, pos, sealed.doors):
+            return False, "not_at_build_frontier"
+        return True, "ok"
+
+    def planning_cells_with_seal(self, direction: int) -> set[Position]:
+        reachable = reachable_rooms(self.board, self.player_pos)
+        return {
+            pos for pos in frontier_cells(self.board, reachable)
+            if self.geometry_preview_with_seal(pos, direction)[0]
+        }
 
     def legal_cells_with_seal(self, direction: int) -> set[Position]:
-        reachable = reachable_rooms(self.board, self.player_pos)
-        return {pos for pos in frontier_cells(self.board, reachable) if self.preview_with_seal(pos, direction)[0]}
+        card = self.selected_card
+        if card is None:
+            return set()
+        try:
+            sealed = seal_card(card, direction)
+        except ValueError:
+            return set()
+        return {
+            pos for pos in self.planning_cells_with_seal(direction)
+            if is_local_build_source(self.board, self.player_pos, pos, sealed.doors)
+        }
 
     def place_with_seal(self, pos: Position, direction: int) -> tuple[bool, str]:
         ok, reason = self.preview_with_seal(pos, direction)
         if not ok:
             return False, reason
         candidate = self._candidate()
-        assert candidate.selected_index is not None and candidate.selected_card is not None
-        sealed = seal_card(candidate.selected_card, direction)
-        cards = list(candidate.draw_result.cards)
-        cards[candidate.selected_index] = sealed
-        candidate.draw_result = replace(candidate.draw_result, cards=tuple(cards))
-        candidate.rotations[candidate.selected_index] = 0
-        candidate.resources = candidate.resources.apply(supplies_delta=-candidate.tools.door_seal.cost_supplies)
-        candidate.tool_uses["door_seal"] += 1
-        ok, reason = BuildSession.place(candidate, pos)
+        ok, reason = candidate.preview_with_seal(pos, direction)
         if not ok:
             return False, reason
+        assert candidate.selected_index is not None and candidate.selected_card is not None
+        sealed = seal_card(candidate.selected_card, direction)
+        candidate.resources = candidate.resources.apply(supplies_delta=-candidate.tools.door_seal.cost_supplies)
+        candidate.tool_uses["door_seal"] += 1
+        candidate._build_room(pos, sealed, deal_next=False)
         candidate._finish_build(pos, self)
         self._commit(candidate)
         return True, "ok"
@@ -328,6 +445,7 @@ class MvpSession(BuildSession):
         candidate.tool_uses["emergency_chisel"] += 1
         if target in reachable:
             candidate._reward_loops(1, EventNotification(target, "construction", "A shortcut through the wall.", 0, 0))
+        candidate._wake_guard()
         candidate._refresh_draw()
         self._commit(candidate)
         return True, "ok"

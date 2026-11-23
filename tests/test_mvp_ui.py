@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,13 +10,14 @@ import pygame
 import pytest
 
 from engine.cards import Card, load_card_config
+from engine.demo import DEFAULT_DEMO_PATH
 from engine.level import LevelConfig, SpecialRoom
 from engine.models import Tile
 from engine.mvp import GameStatus, MvpSession
 from engine.resources import Resources
-from ui.app import GameApp
+from ui.app import GameApp, NAV_STEP_MS
 from ui.locales import ZH_TW, translate
-from ui.screens import (BOARD_RECT, CACHE_RECT, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
+from ui.screens import (BOARD_RECT, cache_button_rect, cache_prompt_rect, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
                         GUIDE_NEXT_RECT, GUIDE_PREV_RECT, GUIDE_PAGES, LANGUAGE_RECT, MEDKIT_RECT,
                         WINDOW_SIZE, GOLD, cell_rect, tool_message)
 
@@ -49,16 +51,271 @@ def test_barbed_chest_shows_cost_and_accepts_keyboard_or_mouse(screen, use_mouse
     assert app.session.trapped_cache == 2
     key(app, pygame.K_h)
     if use_mouse:
-        click(app, CACHE_RECT.center)
+        click(app, cache_button_rect(app.session.player_pos).center)
     else:
         key(app, pygame.K_e)
     assert app.event_feedback == app.session.current_event
     assert "HP -1  |  Supplies +2" in labels(app, screen)
     assert app.session.resources == Resources(4, 5, 4, 5)
+    tile = app.session.board[2][0]
+    assert tile.event_icon == "supply" and tile.trapped_cache == 0
+    with patch.object(app.renderer, "supply_chest", wraps=app.renderer.supply_chest) as chest:
+        app.draw(screen)
+    assert chest.call_count == 1
 
 
 def click(app, pos):
     app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos))
+
+
+def remote_plan_app(screen, *, distance=1):
+    app = GameApp(MvpSession(seed=42))
+    cross = Card("straight", (False, True, False, True), "neutral")
+    for col in range(1, distance + 1):
+        app.session.draw_result = replace(app.session.draw_result,
+                                          status="ready",
+                                          cards=(cross, *app.session.draw_result.cards[1:]))
+        app.session.rotations[0] = 0
+        assert app.session.select_card(0)
+        assert app.session.place((3, col))[0]
+    for col in range(distance - 1, -1, -1):
+        assert app.session.move((3, col))[0]
+    app.session.draw_result = replace(app.session.draw_result,
+                                      status="ready",
+                                      cards=(cross, *app.session.draw_result.cards[1:]))
+    app.session.rotations[0] = 0
+    app.select(0)
+    target = (3, distance + 1)
+    return app, target
+
+
+def test_remote_click_sets_plan_without_building_or_consuming_rng(screen):
+    app, target = remote_plan_app(screen)
+    before = state(app.session)
+
+    click(app, cell_rect(target).center)
+
+    assert app.pending_plan is not None
+    assert app.pending_plan.target == target and app.pending_plan.entry == (3, 1)
+    assert app.pending_plan.path == ((3, 0), (3, 1))
+    assert state(app.session) == before
+
+
+def test_auto_walk_calls_mvp_move_once_per_tick_and_arrival_needs_confirmation(screen):
+    app, target = remote_plan_app(screen)
+    click(app, cell_rect(target).center)
+    hand = app.session.draw_result.cards
+    turn = app.session.build_turn
+    app.start_or_pause_auto_walk()
+    now = app.next_nav_step_ms
+
+    with patch.object(app.session, "move", wraps=app.session.move) as move:
+        app.advance_auto_walk(now)
+        app.advance_auto_walk(now)
+        assert move.call_count == 1
+
+    assert app.session.player_pos == (3, 1)
+    assert app.pending_plan is not None and app.pending_plan.steps == 0
+    assert app.session.board[target[0]][target[1]] is None
+    assert app.session.draw_result.cards == hand and app.session.build_turn == turn
+    key(app, pygame.K_RETURN)
+    assert app.pending_plan is None and app.session.board[target[0]][target[1]] is not None
+    assert app.session.build_turn == turn + 1
+
+
+def test_clicking_planned_target_at_entrance_confirms_and_clears_plan(screen):
+    app, target = remote_plan_app(screen)
+    click(app, cell_rect(target).center)
+    app.start_or_pause_auto_walk()
+    app.advance_auto_walk(app.next_nav_step_ms)
+    assert app.pending_plan is not None and app.pending_plan.steps == 0
+
+    click(app, cell_rect(target).center)
+
+    assert app.pending_plan is None
+    assert app.session.player_pos == target and app.session.board[target[0]][target[1]] is not None
+
+
+def test_auto_walk_throttles_steps_and_manual_move_pauses_but_keeps_plan(screen):
+    app, target = remote_plan_app(screen, distance=2)
+    click(app, cell_rect(target).center)
+    app.start_or_pause_auto_walk()
+    first = app.next_nav_step_ms
+    app.advance_auto_walk(first)
+    assert app.session.player_pos == (3, 1) and app.auto_walking
+    app.advance_auto_walk(first + NAV_STEP_MS - 1)
+    assert app.session.player_pos == (3, 1)
+    key(app, pygame.K_RIGHT)
+    assert app.session.player_pos == (3, 2)
+    assert not app.auto_walking and app.pending_plan is not None
+    assert app.pending_plan.steps == 0 and app.nav_pause_reason == "manual"
+
+
+def test_auto_walk_guard_advances_and_unsafe_next_step_pauses(screen):
+    app, target = remote_plan_app(screen, distance=2)
+    app.session.board[2][0] = Tile("room", (False, False, True, False), event_resolved=True)
+    app.session.guard_pos = (2, 0)
+    app.session.guard_next = (3, 0)
+    click(app, cell_rect(target).center)
+    app.start_or_pause_auto_walk()
+    app.advance_auto_walk(app.next_nav_step_ms)
+    assert app.session.player_pos == (3, 1)
+    assert app.session.guard_pos == (3, 0) and app.session.guard_next == (3, 1)
+
+    # Recompute then make the next route cell explicitly unsafe.
+    app.session.guard_next = (3, 2)
+    app.advance_auto_walk(app.next_nav_step_ms)
+    assert app.session.player_pos == (3, 1)
+    assert not app.auto_walking and app.nav_pause_reason == "guard"
+
+
+def test_navigation_stops_on_first_entry_event_and_preserves_plan(screen):
+    app, target = remote_plan_app(screen, distance=2)
+    room = app.session.board[3][1]
+    app.session.board[3][1] = replace(room, event_category="danger", event_resolved=False,
+                                      event_outcome=None, event_icon="")
+    app.session.current_event = None
+    click(app, cell_rect(target).center)
+    app.start_or_pause_auto_walk()
+
+    app.advance_auto_walk(app.next_nav_step_ms)
+
+    assert app.session.player_pos == (3, 1)
+    assert app.session.current_event is not None
+    assert not app.auto_walking and app.nav_pause_reason == "event"
+    assert app.pending_plan is not None
+
+
+def test_navigation_stops_on_objective_and_terminal_state(screen):
+    horizontal = (False, True, False, True)
+    altar_level = LevelConfig(
+        SpecialRoom("start", (3, 0), (True, True, True, False)),
+        (SpecialRoom("altar_a", (3, 1), horizontal),
+         SpecialRoom("altar_b", (6, 6), (True, False, False, True))),
+        SpecialRoom("core", (0, 6), (False, False, True, True)),
+    )
+    app = GameApp(MvpSession(seed=42, level=altar_level))
+    card = Card("straight", horizontal, "neutral")
+    app.session.draw_result = replace(app.session.draw_result, status="ready",
+                                      cards=(card, *app.session.draw_result.cards[1:]))
+    app.session.rotations = [0] * len(app.session.draw_result.cards)
+    app.session.guard_pos = app.session.guard_next = None
+    app.select(0)
+    click(app, cell_rect((3, 2)).center)
+    app.start_or_pause_auto_walk()
+    app.advance_auto_walk(app.next_nav_step_ms)
+    assert "altar_a" in app.session.activated_altars
+    assert app.pending_plan is not None and not app.auto_walking
+    assert app.nav_pause_reason == "event"
+
+    core_level = LevelConfig(
+        SpecialRoom("start", (3, 0), (True, True, True, False)),
+        (SpecialRoom("altar_a", (0, 6), (False, False, True, True)),
+         SpecialRoom("altar_b", (6, 6), (True, False, False, True))),
+        SpecialRoom("core", (3, 1), horizontal),
+    )
+    app = GameApp(MvpSession(seed=42, level=core_level))
+    app.session.activated_altars = frozenset(room.kind for room in core_level.altars)
+    app.session.board[3][1] = replace(app.session.board[3][1], special_state="unlocked")
+    app.session.draw_result = replace(app.session.draw_result, status="ready",
+                                      cards=(card, *app.session.draw_result.cards[1:]))
+    app.session.rotations = [0] * len(app.session.draw_result.cards)
+    app.select(0)
+    click(app, cell_rect((3, 2)).center)
+    app.start_or_pause_auto_walk()
+    app.advance_auto_walk(app.next_nav_step_ms)
+    assert app.session.status == GameStatus.WON
+    assert app.pending_plan is None and not app.auto_walking
+
+
+def test_selection_rotation_restart_cancel_pending_plan(screen):
+    for action in ("selection", "rotation", "restart", "escape"):
+        app, target = remote_plan_app(screen)
+        click(app, cell_rect(target).center)
+        assert app.pending_plan is not None
+        if action == "selection":
+            key(app, pygame.K_1)
+        elif action == "rotation":
+            key(app, pygame.K_r)
+        elif action == "restart":
+            key(app, pygame.K_n)
+        else:
+            key(app, pygame.K_ESCAPE)
+            assert app.running
+        assert app.pending_plan is None and not app.auto_walking
+
+
+def test_hand_rotation_rng_unchanged_after_planning_and_walking(screen):
+    app, target = remote_plan_app(screen)
+    before = (app.session.draw_result.cards, app.session.rotations[:],
+              app.session.rng.getstate(), app.session.build_turn)
+    click(app, cell_rect(target).center)
+    app.start_or_pause_auto_walk()
+    app.advance_auto_walk(app.next_nav_step_ms)
+    after = (app.session.draw_result.cards, app.session.rotations[:],
+             app.session.rng.getstate(), app.session.build_turn)
+    assert after == before
+
+
+def test_build_plan_panel_and_route_render_without_state_changes(screen):
+    app, target = remote_plan_app(screen)
+    before = state(app.session)
+    click(app, cell_rect(target).center)
+
+    shown = labels(app, screen)
+
+    assert {"Build plan", "Target C4", "Entrance B4", "Steps 1"} <= set(shown)
+    assert state(app.session) == before
+
+
+def test_chest_prompt_returns_on_revisit_and_handles_disabled_opening(screen):
+    app = GameApp(MvpSession(seed=0))
+    key(app, pygame.K_1)
+    chest = (2, 0)
+    click(app, cell_rect(chest).center)
+    assert app.session.trapped_cache == 2
+    with patch.object(app.renderer, "cache_prompt", wraps=app.renderer.cache_prompt) as prompt:
+        app.draw(screen)
+        assert prompt.call_count == 1
+        click(app, cell_rect((3, 0)).center)
+        app.draw(screen)
+        assert prompt.call_count == 1
+        click(app, cell_rect(chest).center)
+        app.draw(screen)
+        assert prompt.call_count == 2
+    app.session.resources = Resources(1, 5, 2, 5)
+    before = state(app.session)
+    click(app, cache_button_rect(chest).center)
+    assert state(app.session) == before
+    assert "Need at least 2 HP" in labels(app, screen)
+    app.session.resources = Resources(5, 5, 5, 5)
+    before = state(app.session)
+    key(app, pygame.K_e)
+    assert state(app.session) == before
+    assert "Supplies full" in labels(app, screen)
+
+
+@pytest.mark.parametrize("pos", [(0, 0), (0, 6), (6, 0), (6, 6), (3, 3)])
+def test_chest_prompt_stays_off_map_without_covering_construction(pos):
+    panel = cache_prompt_rect(pos)
+    assert not panel.colliderect(BOARD_RECT)
+    assert pygame.Rect((0, 0), WINDOW_SIZE).contains(panel)
+    assert panel.contains(cache_button_rect(pos))
+
+
+def test_build_click_beside_unopened_chest_is_not_intercepted(screen):
+    app = GameApp(MvpSession(seed=42))
+    row, col = app.session.player_pos
+    app.session.board[row][col] = replace(app.session.board[row][col], trapped_cache=2)
+    key(app, pygame.K_2)
+    key(app, pygame.K_q)
+    target = (3, 1)
+    assert app.session.preview(target)[0]
+    app.draw(screen)
+    click(app, cell_rect(target).center)
+    assert app.session.player_pos == target
+    assert app.session.board[target[0]][target[1]] is not None
+    assert app.session.board[row][col].trapped_cache == 2
 
 
 def labels(app, screen):
@@ -69,10 +326,11 @@ def labels(app, screen):
 
 def test_health_warning_tracks_damage_healing_and_well_use(screen):
     app = GameApp(MvpSession(seed=104, resources=Resources(2, 5, 2, 5)))
-    assert {"LOW HP", "Well C4 heals 1 HP"} <= set(labels(app, screen))
+    assert {"LOW HP", "Medkit [M] heals 1 HP"} <= set(labels(app, screen))
     key(app, pygame.K_1)
     key(app, pygame.K_r)
     click(app, cell_rect((3, 1)).center)
+    assert "Medkit [M] or free well C4" in labels(app, screen)
     click(app, cell_rect((3, 2)).center)
     assert app.session.resources.hp == 3
     assert "LOW HP" not in labels(app, screen)
@@ -97,6 +355,29 @@ def test_medkit_uses_supplies_without_advancing_the_turn(screen):
     assert (game.resources.hp, game.resources.supplies) == (5, 0)
     assert "HP +1  |  Supplies -2" in labels(app, screen)
     assert (game.draw_result, game.selected_index, game.build_turn, game.rng.getstate()) == hand
+
+
+def test_last_exit_warns_before_build_and_offers_restart_afterward(screen):
+    app = GameApp(MvpSession(seed=18))
+    for number, turns, pos in ((2, 2, (2, 0)), (2, 3, (3, 1)), (1, 0, (4, 0))):
+        key(app, pygame.K_1 + number - 1)
+        for _ in range(turns):
+            key(app, pygame.K_r)
+        app.hovered_pos = pos
+        before = app.session.rng.getstate()
+        assert ("This build will seal the last exit." in labels(app, screen)) == (pos == (4, 0))
+        assert app.session.rng.getstate() == before
+        click(app, cell_rect(pos).center)
+        if pos != (4, 0):
+            click(app, cell_rect(app.session.level.start.pos).center)
+    assert "All exits are sealed. Press N to restart." in labels(app, screen)
+    assert app.session.blocked and app.session.status == GameStatus.PLAYING
+    key(app, pygame.K_DOWN)
+    assert app.session.player_pos == (4, 0)
+    key(app, pygame.K_UP)
+    assert app.session.player_pos == (3, 0)
+    key(app, pygame.K_n)
+    assert not app.session.blocked and app.session.build_turn == 0
 
 
 @pytest.mark.parametrize("hp,supplies,status,reason", [
@@ -176,6 +457,8 @@ def test_bundled_font_and_catalogue_cover_the_guide_and_events(app):
     font = app.renderer.chinese_fonts[2]
     chars = {c for text in ZH_TW.values() for c in text if ord(c) > 127}
     assert all(font.metrics(c)[0] is not None for c in chars)
+    assert all(font.render(c, True, "white").get_bounding_rect().width > 0
+               for c in chars if not c.isspace())
 
 
 def test_connecting_and_visiting_a_well_through_game_controls(screen):
@@ -202,6 +485,8 @@ def test_guide_example_previews_then_awards_a_loop_alongside_the_room_event(app,
             assert any("Closes 1 new loop" in line for line in labels(app, screen))
             assert app.session.loops_closed == 0
         click(app, cell_rect(pos).center)
+        if pos == (2, 0):
+            click(app, cell_rect(app.session.level.start.pos).center)
     assert app.event_feedback == app.session.current_event
     assert "Supplies -1  |  1 loop  (+1 supply)" in labels(app, screen)
     assert app.session.loops_closed == 1
@@ -233,6 +518,9 @@ def test_special_rooms_show_their_initial_art(app, screen, pos, asset):
     sprite = pygame.image.load(Path(__file__).resolve().parents[1] / "assets" / "rooms" / f"{asset}-72.png")
     area = cell_rect(pos).move(-BOARD_RECT.x, -BOARD_RECT.y)
     sprite = pygame.transform.scale(sprite, area.size)
+    if asset.startswith(("altar_", "core-")):
+        name, directions = asset.rsplit("-", 1)
+        sprite = app.renderer.room_tiles[name, tuple(side in directions for side in "nesw")]
     expected = app.renderer.board_floor.subsurface(area).convert(screen)
     expected.blit(sprite, (0, 0))
     center = pygame.Rect(22, 22, 28, 28)
@@ -240,22 +528,24 @@ def test_special_rooms_show_their_initial_art(app, screen, pos, asset):
     assert pygame.image.tobytes(actual, "RGB") == pygame.image.tobytes(expected.subsurface(center), "RGB")
 
 
-def test_both_altars_share_one_full_tile_design():
-    room_dir = Path(__file__).resolve().parents[1] / "assets" / "rooms"
+def test_both_altars_share_one_full_tile_design(app):
     for state in ("idle", "activated"):
-        altar_a = pygame.image.load(room_dir / f"altar_a-{state}-sw-72.png")
-        altar_b = pygame.image.load(room_dir / f"altar_b-{state}-nw-72.png")
-        restored = pygame.transform.rotate(altar_b, 90)
-        assert pygame.image.tobytes(altar_a, "RGBA") == pygame.image.tobytes(restored, "RGBA")
-        assert altar_a.get_bounding_rect(min_alpha=12) == pygame.Rect(0, 0, 72, 72)
+        altar_a = app.renderer.objects[f"altar_a-{state}"]
+        altar_b = app.renderer.objects[f"altar_b-{state}"]
+        assert pygame.image.tobytes(altar_a, "RGBA") == pygame.image.tobytes(altar_b, "RGBA")
+        mirrored = pygame.transform.flip(altar_a, True, False)
+        assert pygame.image.tobytes(altar_a, "RGBA") == pygame.image.tobytes(mirrored, "RGBA")
+        assert altar_a.get_bounding_rect().width > 20
 
 
-def test_locked_core_is_a_full_independent_room_and_differs_from_unlocked_core():
-    room_dir = Path(__file__).resolve().parents[1] / "assets" / "rooms"
-    locked = pygame.image.load(room_dir / "core-locked-nsw-72.png")
-    unlocked = pygame.image.load(room_dir / "core-unlocked-nsw-72.png")
-    assert locked.get_bounding_rect(min_alpha=12).height == 72
-    assert unlocked.get_bounding_rect(min_alpha=12).height == 72
+def test_locked_core_is_a_full_independent_room_and_differs_from_unlocked_core(app):
+    locked = app.renderer.objects["core-locked"]
+    unlocked = app.renderer.objects["core-unlocked"]
+    assert locked.get_bounding_rect(min_alpha=12).height >= 40
+    assert unlocked.get_bounding_rect(min_alpha=12).height >= 40
+    assert max(locked.get_at((22, 22))[:3]) < 70
+    red, green, blue, _ = unlocked.get_at((22, 22))
+    assert green > red and green > blue and green > 200
     assert pygame.image.tobytes(locked, "RGBA") != pygame.image.tobytes(unlocked, "RGBA")
 
 
@@ -268,11 +558,30 @@ def test_objective_checklist_updates_on_real_entry_and_shows_victory(screen):
     key(app, pygame.K_RIGHT)
     shown = labels(app, screen)
     assert shown.count("ACTIVE") == 2 and "OPEN" in shown
-    # This custom horizontal fixture has no matching bespoke objective-room art.
-    assert screen.get_at(cell_rect(app.session.level.core.pos).center)[:3] == GOLD
+    # Custom doorway layouts retain the same unlocked core artwork.
+    core_art = app.renderer.room_tiles["core-unlocked", app.session.level.core.doors]
+    actual = screen.get_at(cell_rect(app.session.level.core.pos).center)
+    expected = core_art.get_at((38, 38))
+    assert all(abs(actual[index] - expected[index]) <= 6 for index in range(3))
     key(app, pygame.K_RIGHT)
     assert app.session.status == GameStatus.WON
     assert "VICTORY" in labels(app, screen)
+
+
+def test_guard_panel_tracks_build_alarm_and_explains_wake_reason(screen):
+    app = GameApp(MvpSession(seed=159))
+    shown = labels(app, screen)
+    assert {"Guard alert", "0/11", "Each build stirs the guard."} <= set(shown)
+    actions = json.loads(DEFAULT_DEMO_PATH.read_text(encoding="utf-8"))["actions"]
+    for action in actions[:8]:
+        key(app, pygame.K_1 + action["card"] - 1)
+        for _ in range(action["turns"]):
+            key(app, pygame.K_r)
+        click(app, cell_rect(tuple(action["pos"])).center)
+    shown = labels(app, screen)
+    assert app.session.guard_wake_reason == "altar" and not app.session.activated_altars
+    assert {"Guard awake", "An altar echoes.", "Armored steps follow you."} <= set(shown)
+    assert any(str(label).startswith("Next step:") for label in shown)
 
 
 def test_seal_cycles_current_doors_and_rotation_or_selection_cancels(app):
@@ -400,6 +709,17 @@ def test_mvp_text_fits_existing_window_and_rendering_does_not_change_state(app, 
         assert pos[0] >= 0 and pos[0] + font.size(message)[0] <= WINDOW_SIZE[0]
         assert pos[1] >= 0 and pos[1] + font.get_linesize() <= WINDOW_SIZE[1]
     assert state(app.session) == before
+
+
+def test_chinese_tool_usage_label_stays_inside_window(app, screen):
+    app.renderer.toggle_language()
+    with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
+        app.draw(screen)
+    tool_labels = [call for call in texts.call_args_list if call.args[2] == (986, 620)]
+    assert len(tool_labels) == 1
+    label = app.renderer.t(tool_labels[0].args[1])
+    assert "封門" in label and "鑿壁" in label
+    assert 986 + app.renderer.small_font.size(label)[0] <= WINDOW_SIZE[0]
 
 
 @pytest.mark.parametrize("reason,fragment", [("tool_limit_reached", "remaining"),

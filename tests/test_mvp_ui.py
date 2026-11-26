@@ -11,6 +11,7 @@ import pytest
 
 from engine.cards import Card, load_card_config
 from engine.demo import DEFAULT_DEMO_PATH
+from engine.endless import EndlessRun
 from engine.level import LevelConfig, SpecialRoom
 from engine.models import Tile
 from engine.mvp import GameStatus, MvpSession
@@ -55,7 +56,7 @@ def test_barbed_chest_shows_cost_and_accepts_keyboard_or_mouse(screen, use_mouse
     else:
         key(app, pygame.K_e)
     assert app.event_feedback == app.session.current_event
-    assert "HP -1  |  Supplies +2" in labels(app, screen)
+    assert {"-1 HP", "+2 Supplies"} <= set(labels(app, screen))
     assert app.session.resources == Resources(4, 5, 4, 5)
     tile = app.session.board[2][0]
     assert tile.event_icon == "supply" and tile.trapped_cache == 0
@@ -296,9 +297,10 @@ def test_chest_prompt_returns_on_revisit_and_handles_disabled_opening(screen):
 
 
 @pytest.mark.parametrize("pos", [(0, 0), (0, 6), (6, 0), (6, 6), (3, 3)])
-def test_chest_prompt_stays_off_map_without_covering_construction(pos):
+def test_chest_prompt_stays_on_map_without_covering_adjacent_construction(pos):
     panel = cache_prompt_rect(pos)
-    assert not panel.colliderect(BOARD_RECT)
+    assert BOARD_RECT.contains(panel)
+    assert not panel.colliderect(cell_rect(pos).inflate(2 * cell_rect(pos).width, 2 * cell_rect(pos).height))
     assert pygame.Rect((0, 0), WINDOW_SIZE).contains(panel)
     assert panel.contains(cache_button_rect(pos))
 
@@ -353,7 +355,7 @@ def test_medkit_uses_supplies_without_advancing_the_turn(screen):
     assert app.event_feedback.category == "medkit"
     click(app, MEDKIT_RECT.center)
     assert (game.resources.hp, game.resources.supplies) == (5, 0)
-    assert "HP +1  |  Supplies -2" in labels(app, screen)
+    assert {"+1 HP", "-2 Supplies"} <= set(labels(app, screen))
     assert (game.draw_result, game.selected_index, game.build_turn, game.rng.getstate()) == hand
 
 
@@ -401,6 +403,53 @@ def chain_level():
          SpecialRoom("altar_b", (3, 2), (False, True, False, True))),
         SpecialRoom("core", (3, 3), (False, False, False, True)),
     )
+
+
+def test_endless_three_floors_preserve_resources_and_replay_seeds(screen):
+    expedition = MvpSession(seed=159, level=chain_level())
+    app = GameApp(expedition)
+    app.open_lobby()
+    key(app, pygame.K_u)
+    run = app.endless_run
+    replica = EndlessRun(expedition)
+    for floor in range(1, 4):
+        session = app.session
+        assert run.floor == floor and run.completed == floor - 1
+        assert session.seed == replica.session.seed
+        assert session.board == replica.session.board
+        assert not session.activated_altars and not session.core_unlocked
+        key(app, pygame.K_RETURN)
+        assert app.session is session
+        for _ in range(3):
+            key(app, pygame.K_RIGHT)
+            other = replica.session
+            assert other.move((3, other.player_pos[1] + 1))[0]
+        assert session.status == GameStatus.WON and run.completed == floor
+        assert "Floor cleared" in labels(app, screen)
+        resources = session.resources
+        key(app, pygame.K_RETURN)
+        assert replica.advance()
+        assert app.session is not session and app.session.resources == resources
+        assert app.session.current_event is None
+    key(app, pygame.K_l)
+    assert app.session is expedition and expedition.player_pos == expedition.level.start.pos
+    key(app, pygame.K_u)
+    assert run.floor == 4 and app.session is run.session
+    key(app, pygame.K_x)
+    assert app.terminal and "Run ended" in labels(app, screen)
+    key(app, pygame.K_n)
+    assert run.floor == 1 and run.completed == 0 and not app.terminal
+    assert app.session.resources == expedition.initial_resources
+
+
+def test_endless_defeat_cannot_advance():
+    run = EndlessRun(MvpSession(seed=159, level=chain_level(), resources=Resources(1, 5, 2, 5)))
+    session = run.session
+    assert session.guard_pos is not None
+    assert session.move(session.guard_pos)[0]
+    assert session.status == GameStatus.LOST
+    assert not run.advance()
+    assert run.floor == 1 and run.completed == 0 and run.session is session
 
 
 def state(session):
@@ -488,7 +537,7 @@ def test_guide_example_previews_then_awards_a_loop_alongside_the_room_event(app,
         if pos == (2, 0):
             click(app, cell_rect(app.session.level.start.pos).center)
     assert app.event_feedback == app.session.current_event
-    assert "Supplies -1  |  1 loop  (+1 supply)" in labels(app, screen)
+    assert {"-1 Supplies", "1 loop  (+1 supply)"} <= set(labels(app, screen))
     assert app.session.loops_closed == 1
 
 
@@ -496,7 +545,7 @@ def test_default_mvp_shows_fixed_objectives_tool_costs_and_core_lock(app, screen
     shown = labels(app, screen)
     assert "A1" in shown and "A2" in shown and "C-" in shown
     assert "A1 G1" in shown and "A2 G7" in shown and "CORE G4" in shown and "LOCKED" in shown
-    assert any("Seal 1S / 3 left" in line and "Chisel 2S / 2 left" in line for line in shown)
+    assert {"Medkit [M]", "Seal [F]", "Chisel [C]", "Uses: 3/3", "Uses: 2/2"} <= set(shown)
     assert app.session.status == GameStatus.PLAYING
 
 
@@ -715,11 +764,26 @@ def test_chinese_tool_usage_label_stays_inside_window(app, screen):
     app.renderer.toggle_language()
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
-    tool_labels = [call for call in texts.call_args_list if call.args[2] == (986, 620)]
-    assert len(tool_labels) == 1
-    label = app.renderer.t(tool_labels[0].args[1])
-    assert "封門" in label and "鑿壁" in label
-    assert 986 + app.renderer.small_font.size(label)[0] <= WINDOW_SIZE[0]
+    for rect in (MEDKIT_RECT, SEAL_RECT, CHISEL_RECT):
+        call, = [c for c in texts.call_args_list if c.args[2] == (rect.x+42, rect.y+34)]
+        label = app.renderer.t(call.args[1])
+        assert "剩餘" in label
+        assert rect.x+42 + app.renderer.small_font.size(label)[0] <= rect.right
+
+
+def test_medkit_limit_and_hover_help(app, screen):
+    rect = MEDKIT_RECT
+    app.handle_event(pygame.event.Event(pygame.MOUSEMOTION, pos=rect.center))
+    assert "Medkit [M]  |  2 supplies" in labels(app, screen)
+    game = app.session
+    game.resources = Resources(1, 5, 8, 8)
+    for _ in range(2):
+        click(app, rect.center)
+    before = game.resources
+    assert game.use_medkit() == (False, "tool_limit_reached") and game.resources == before
+    assert "Uses: 0/2" in labels(app, screen)
+    game.restart()
+    assert game.tool_uses["medkit"] == 0
 
 
 @pytest.mark.parametrize("reason,fragment", [("tool_limit_reached", "remaining"),

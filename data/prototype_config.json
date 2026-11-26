@@ -28,11 +28,11 @@
     "_comment": "[PROVISIONAL] 加權事件在抽牌時決定、進房時揭露（GAME_DESIGN §5）",
     "categories": ["supply", "danger", "neutral", "relic"],
     "weights_by_kind": {
-      "dead_end":   { "supply": 14, "danger": 4,  "neutral": 2,  "relic": 0 },
+      "dead_end":   { "supply": 8, "danger": 2,  "neutral": 2,  "relic": 8 },
       "straight":   { "supply": 2,  "danger": 3,  "neutral": 15, "relic": 0 },
       "corner":     { "supply": 6,  "danger": 6,  "neutral": 8,  "relic": 0 },
-      "t_junction": { "supply": 7,  "danger": 11, "neutral": 2,  "relic": 0 },
-      "cross":      { "supply": 3,  "danger": 9,  "neutral": 2,  "relic": 6 }
+      "t_junction": { "supply": 5,  "danger": 13, "neutral": 2,  "relic": 0 },
+      "cross":      { "supply": 3,  "danger": 10,  "neutral": 2,  "relic": 5 }
     },
     "outcomes": {
       "supply": {
@@ -79,6 +79,10 @@
     "door_seal": {
       "cost_supplies": 1,
       "max_uses_per_game": 3
+    },
+    "medkit": {
+      "cost_supplies": 2,
+      "max_uses_per_game": 2
     },
     "emergency_chisel": {
       "cost_supplies": 2,

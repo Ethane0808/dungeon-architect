@@ -48,6 +48,8 @@ class LevelConfig:
     rubble_count: int = 0
     spring_count: int = 0
     guard_build_limit: int = 11
+    spring_position: str = "random"
+    well_kind: str = "spring"
 
     def __post_init__(self) -> None:
         if not isinstance(self.start, SpecialRoom) or self.start.kind != "start":
@@ -60,12 +62,16 @@ class LevelConfig:
             raise ValueError("At least one altar SpecialRoom is required in an immutable tuple")
         if type(self.first_altar_supplies) is not int or self.first_altar_supplies < 0:
             raise ValueError("first_altar_supplies must be a nonnegative integer")
+        if self.spring_position not in ("random", "near_start", "far_from_start"):
+            raise ValueError("Unknown spring_position")
+        if self.well_kind not in ("spring", "bell"):
+            raise ValueError("Unknown well_kind")
         if type(self.guard_build_limit) is not int or self.guard_build_limit < 1:
             raise ValueError("guard_build_limit must be a positive integer")
         if any(type(n) is not int or n < 0 for n in (self.rubble_count, self.spring_count)):
             raise ValueError("Terrain counts must be nonnegative integers")
         rooms = (self.start, *self.altars, self.core)
-        if any(room.kind in {"spring", "rubble"} for room in rooms):
+        if any(room.kind in {"spring", "rubble", "bell"} for room in rooms):
             raise ValueError("Special-room ids cannot overlap terrain kinds")
         if len({room.kind for room in rooms}) != len(rooms):
             raise ValueError("Special-room ids must be unique and altars cannot use start/core ids")
@@ -127,25 +133,27 @@ class LevelConfig:
             if not remaining:
                 break
             board[r][c] = Tile("rubble", (False,) * 4)
-            if (required <= self.potential_positions(board, core_locked=True)
+            accessible = self.potential_positions(board, core_locked=True)
+            well_space = not self.spring_count or any(
+                pos in accessible and board[pos[0]][pos[1]] is None for pos in candidates)
+            if (well_space and required <= accessible
                     and self.core.pos in self.potential_positions(board, core_locked=False)):
                 remaining -= 1
             else:
                 board[r][c] = None
         reachable = self.potential_positions(board, core_locked=True)
-        remaining = self.spring_count
-        for r, c in candidates:
-            if not remaining:
-                break
-            if board[r][c] or (r, c) not in reachable:
-                continue
+        if self.spring_position != "random":
+            sr, sc = self.start.pos
+            candidates.sort(key=lambda p: abs(p[0] - sr) + abs(p[1] - sc),
+                            reverse=self.spring_position == "far_from_start")
+        well_cells = [pos for pos in candidates if pos in reachable and not board[pos[0]][pos[1]]][:self.spring_count]
+        for r, c in well_cells:
             doors = []
             for side in DIRECTIONS:
                 nr, nc = neighbor_pos(r, c, side)
                 neighbor = board[nr][nc]
                 doors.append(neighbor is None or neighbor.doors[OPPOSITE[side]])
-            board[r][c] = Tile("spring", tuple(doors))
-            remaining -= 1
+            board[r][c] = Tile(self.well_kind, tuple(doors))
 
     @classmethod
     def from_mapping(cls, data: Mapping) -> "LevelConfig":

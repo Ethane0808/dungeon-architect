@@ -130,7 +130,7 @@ class TutorialSession(MvpSession):
                 self.lesson = 5
         return result
 
-    def _tool_budget(self, name):
+    def tool_budget(self, name):
         return False, "tutorial_step"
 
     def medkit_preview(self):

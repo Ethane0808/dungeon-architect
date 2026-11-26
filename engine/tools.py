@@ -31,10 +31,11 @@ class ToolRule:
 class ToolConfig:
     door_seal: ToolRule
     emergency_chisel: ToolRule
+    medkit: ToolRule = ToolRule(2, 2)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.door_seal, ToolRule) or not isinstance(self.emergency_chisel, ToolRule):
-            raise ValueError("Tool configuration requires two ToolRule values")
+        if not all(isinstance(rule, ToolRule) for rule in (self.door_seal, self.emergency_chisel, self.medkit)):
+            raise ValueError("Tool configuration requires ToolRule values")
 
     @classmethod
     def from_mapping(cls, data: Mapping) -> "ToolConfig":
@@ -43,6 +44,9 @@ class ToolConfig:
             rules = []
             for name in ("door_seal", "emergency_chisel"):
                 definition = items[name]
+                rules.append(ToolRule(definition["cost_supplies"], definition["max_uses_per_game"]))
+            if "medkit" in items:
+                definition = items["medkit"]
                 rules.append(ToolRule(definition["cost_supplies"], definition["max_uses_per_game"]))
             return cls(*rules)
         except (KeyError, TypeError, AttributeError) as error:

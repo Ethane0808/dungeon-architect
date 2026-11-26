@@ -7,17 +7,20 @@ import pygame
 from engine.cards import Position
 from engine.directions import N, E, S, W, neighbor_pos
 from engine.game import BuildSession
+from engine.endless import DifficultyError, EndlessRun
+from engine.mvp import MvpSession
 from engine.navigation import route_to_build_site
 from engine.tutorial import TutorialSession
 from engine.messages import Message
 from engine.tools import seal_card
+from engine.encounters import BLOCK_END_MS
 from ui.screens import (
     RESTART_RECT, HELP_RECT, ROTATE_RECT, SEAL_RECT, CHISEL_RECT, MEDKIT_RECT, END_RESTART_RECT,
     EVENT_FEEDBACK_MS, GameRenderer, ROOM_NAMES, WINDOW_SIZE, card_at_pixel, cell_at_pixel,
     cell_label, movement_message, placement_message, tool_message, LOBBY_RECT, ENTER_RECT,
     GUIDE_RECT, EXIT_RECT, GUIDE_CLOSE_RECT, GUIDE_PREV_RECT, GUIDE_NEXT_RECT, GUIDE_PAGES,
-    cache_button_rect, cache_prompt_rect,
-    LANGUAGE_RECT, TUTORIAL_RECT, PLAN_GO_RECT, PLAN_CANCEL_RECT,
+    cache_button_rect, choice_rects, block_key_rect, event_close_rect, cell_rect, needs_event_panel,
+    LANGUAGE_RECT, TUTORIAL_RECT, ENDLESS_RECT, PLAN_GO_RECT, PLAN_CANCEL_RECT,
     TUTORIAL_SKIP_RECT, TUTORIAL_START_RECT, TUTORIAL_REPLAY_RECT,
 )
 
@@ -55,9 +58,12 @@ class GameApp:
     def __init__(self, session: BuildSession, *, fullscreen: bool = False):
         self.session = session
         self.expedition_session = session
+        self.endless_run: EndlessRun | None = None
+        self.difficulty_error = False
         self.renderer = GameRenderer()
         self.running = True
         self.hovered_pos = None
+        self.pointer_pos = None
         self.message = getattr(session, "objective_message", "Choose a room card, then explore an open exit.")
         self.seal_direction: int | None = None
         self.chisel_mode = False
@@ -70,6 +76,9 @@ class GameApp:
         self.logical_surface = pygame.Surface(WINDOW_SIZE)
         self.event_feedback = None
         self.event_feedback_started_at = 0
+        self.event_panel_notice = None
+        self.interaction_hidden = False
+        self.dodge_started = None
         self.pending_plan: BuildPlan | None = None
         self.auto_walking = False
         self.next_nav_step_ms = 0
@@ -94,8 +103,6 @@ class GameApp:
             self.show_tip("loop", "Loop completed! Bonus Supplies.")
         if self.session.resources.hp < previous_hp:
             self.show_tip("hp", "Use a Medkit to restore HP.")
-        if self.session.trapped_cache:
-            self.show_tip("chest", "Open the chest for Supplies at an HP cost.")
         if self.session.selected_card is not None and not self.session.planning_cells():
             self.show_tip("seal", "Seal an unwanted doorway to fit a room.")
 
@@ -105,7 +112,13 @@ class GameApp:
 
     @property
     def terminal(self) -> bool:
-        return getattr(self.session, "status", "PLAYING") in ("WON", "LOST")
+        return (bool(self.active_endless and self.active_endless.ended)
+                or getattr(self.session, "status", "PLAYING") in ("WON", "LOST"))
+
+    @property
+    def active_endless(self):
+        run = self.endless_run
+        return run if run is not None and self.session is run.session else None
 
     def clear_tools(self) -> None:
         self.seal_direction = None
@@ -149,7 +162,7 @@ class GameApp:
         card = self._planned_card()
         route = None if card is None or not preview[0] else route_to_build_site(
             self.session.board, self.session.player_pos, plan.target, card.doors)
-        if route is None:
+        if route is None or any(not self.session.visible(p) for p in route.path):
             self.cancel_plan()
             return False
         self.pending_plan = replace(plan, entry=route.entry, path=route.path)
@@ -165,6 +178,9 @@ class GameApp:
             self.session.board, self.session.player_pos, target, card.doors)
         if route is None:
             self.message = placement_message(preview[1])
+            return False
+        if any(not self.session.visible(p) for p in route.path):
+            self.message = placement_message("in_fog")
             return False
         index = self.session.selected_index
         self.pending_plan = BuildPlan(target, route.entry, route.path, index,
@@ -229,7 +245,7 @@ class GameApp:
         )
         if self.terminal:
             self.cancel_plan()
-        elif changed:
+        elif changed and self.pending_plan is not None:
             self.auto_walking = False
             self.nav_pause_reason = "event"
             self.message = "Navigation paused after an event or objective change. Press G to resume."
@@ -263,10 +279,12 @@ class GameApp:
         return True
 
     def open_lobby(self) -> None:
+        self.dodge_started = None
         self.cancel_plan()
-        if isinstance(self.session, TutorialSession):
+        if isinstance(self.session, TutorialSession) or self.active_endless:
             self.session = self.expedition_session
             self.clear_tools()
+            self.context_tip = None
         self.in_lobby = True
         self.hovered_pos = None
         self.event_feedback = None
@@ -285,8 +303,55 @@ class GameApp:
         self.restart()
         self.in_lobby = False
 
+    def enter_endless(self):
+        if not isinstance(self.expedition_session, MvpSession):
+            return
+        if self._load_endless_floor("enter"):
+            self.in_lobby = False
+
+    def _load_endless_floor(self, action):
+        try:
+            if self.endless_run is None:
+                self.endless_run = EndlessRun(self.expedition_session)
+            elif action == "advance":
+                if not self.endless_run.advance():
+                    return False
+            elif action == "restart" or self.endless_run.ended or self.endless_run.session.status == "LOST":
+                self.endless_run.restart()
+        except DifficultyError:
+            self.difficulty_error = True
+            return False
+        self.difficulty_error = False
+        self._show_endless_floor()
+        return True
+
+    def _show_endless_floor(self):
+        self.dodge_started = None
+        self.interaction_hidden = False
+        self.cancel_plan()
+        self.session = self.endless_run.session
+        self.hovered_pos = None
+        self.clear_tools()
+        self.event_feedback = None
+        self.context_tip = None
+        self.seen_tips.clear()
+        level, tools = self.session.level, self.session.tools
+        wells = {"random": "scattered", "near_start": "near Start", "far_from_start": "far from Start"}
+        self.message = Message("Guard wakes at {limit} builds or altar link. {landmark}: {well}. Chisels: {chisel}. Seals: {seal}.",
+                               landmark="Ancient bell" if level.well_kind == "bell" else "Healing well",
+                               limit=level.guard_build_limit, well=wells[level.spring_position] if level.spring_count else "none",
+                               chisel=tools.emergency_chisel.max_uses_per_game, seal=tools.door_seal.max_uses_per_game)
+
+    def advance_endless(self):
+        run = self.active_endless
+        if run is not None:
+            self._load_endless_floor("advance")
+
     def select(self, index: int) -> None:
         if self.session.select_card(index):
+            self.event_panel_notice = None
+            self.interaction_hidden = True
+            self.dodge_started = None
             self.cancel_plan()
             self.clear_tools()
             self.message = "Rotate the room or click a highlighted cell to build."
@@ -300,6 +365,11 @@ class GameApp:
             self.message = "Green cells show where this rotation fits."
 
     def restart(self) -> None:
+        self.dodge_started = None
+        self.interaction_hidden = False
+        if self.active_endless:
+            self._load_endless_floor("restart")
+            return
         self.cancel_plan()
         self.session.restart()
         if not isinstance(self.session, TutorialSession):
@@ -313,6 +383,8 @@ class GameApp:
     def capture_event_feedback(self, previous) -> None:
         notification = self.session.current_event
         if notification is not None and notification is not previous:
+            self.interaction_hidden = False
+            self.event_panel_notice = notification if needs_event_panel(notification) else None
             self.event_feedback = notification
             self.event_feedback_started_at = pygame.time.get_ticks()
 
@@ -323,7 +395,27 @@ class GameApp:
             self.capture_event_feedback(previous)
             self.message = "Chest emptied. Explore another room."
 
+    def choose_encounter(self, option, *, timeout=False):
+        elapsed = None
+        if self.session.encounter == "monster":
+            if self.dodge_started is not None:
+                if option != 1:
+                    return
+                if not timeout:
+                    elapsed = pygame.time.get_ticks() - self.dodge_started
+                self.dodge_started = None
+            elif option == 1:
+                self.interaction_hidden = False
+                self.auto_walking = False
+                self.dodge_started = pygame.time.get_ticks()
+                return
+        before = self.session.current_event
+        if self.session.choose_encounter(option, block_elapsed_ms=elapsed):
+            self.cancel_plan()
+            self.capture_event_feedback(before)
+
     def toggle_help(self) -> None:
+        self.dodge_started = None
         self.help_open = not self.help_open
         self.help_page = 0
 
@@ -335,7 +427,7 @@ class GameApp:
             self.capture_event_feedback(previous)
             self.message = self.session.current_event.message
         else:
-            self.message = "Health is already full." if reason == "full_health" else "A medkit needs 2 supplies."
+            self.message = "Health is already full." if reason == "full_health" else tool_message(reason)
 
     def turn_help_page(self, step: int) -> None:
         self.help_page = max(0, min(len(GUIDE_PAGES) - 1, self.help_page + step))
@@ -370,6 +462,8 @@ class GameApp:
         event_before = self.session.current_event
         ok, reason = self.session.move(pos)
         if ok:
+            self.event_panel_notice = None
+            self.interaction_hidden = False
             if self.pending_plan is None:
                 self.clear_tools()
             else:
@@ -427,6 +521,9 @@ class GameApp:
             self.running = False
         elif event.type in (pygame.WINDOWLEAVE, pygame.WINDOWFOCUSLOST):
             self.hovered_pos = None
+            self.pointer_pos = None
+            if event.type == pygame.WINDOWFOCUSLOST:
+                self.dodge_started = None
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F2:
                 self.renderer.toggle_language()
@@ -451,6 +548,8 @@ class GameApp:
                     self.enter_expedition()
                 elif event.key == pygame.K_t:
                     self.start_tutorial()
+                elif event.key == pygame.K_u:
+                    self.enter_endless()
             elif isinstance(self.session, TutorialSession) and self.session.lesson == 5:
                 if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     self.open_lobby()
@@ -461,8 +560,20 @@ class GameApp:
                 self.open_lobby()
             elif event.key == pygame.K_n:
                 self.restart()
+            elif self.active_endless and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and self.active_endless.can_advance:
+                self.advance_endless()
+            elif self.active_endless and event.key == pygame.K_x and (not self.terminal or self.active_endless.can_advance):
+                self.cancel_plan()
+                self.context_tip = None
+                self.active_endless.ended = True
             elif self.terminal:
                 return
+            elif self.dodge_started is not None and event.key == pygame.K_SPACE:
+                if not getattr(event, "repeat", False):
+                    self.choose_encounter(1)
+            elif self.dodge_started is None and self.is_mvp and self.session.encounter and event.key in (pygame.K_j, pygame.K_k):
+                if not getattr(event, "repeat", False):
+                    self.choose_encounter(int(event.key == pygame.K_k))
             elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                 self.select(event.key - pygame.K_1)
             elif event.key == pygame.K_r:
@@ -485,6 +596,7 @@ class GameApp:
                 self.move(neighbor_pos(*self.session.player_pos, MOVEMENT_KEYS[event.key]))
         elif event.type == pygame.MOUSEMOTION and not self.in_lobby:
             pos = self.logical_pos(event.pos)
+            self.pointer_pos = pos
             self.hovered_pos = cell_at_pixel(pos) if pos is not None else None
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = self.logical_pos(event.pos)
@@ -493,6 +605,11 @@ class GameApp:
                 return
             if LANGUAGE_RECT.collidepoint(pos):
                 self.renderer.toggle_language()
+                return
+            if (self.show_event_panel or self.interaction_visible) and event_close_rect(self.session.player_pos).collidepoint(pos):
+                self.event_panel_notice = None
+                self.interaction_hidden = True
+                self.dodge_started = None
                 return
             if self.help_open:
                 if GUIDE_CLOSE_RECT.collidepoint(pos) or HELP_RECT.collidepoint(pos):
@@ -507,6 +624,8 @@ class GameApp:
                     self.enter_expedition()
                 elif TUTORIAL_RECT.collidepoint(pos):
                     self.start_tutorial()
+                elif ENDLESS_RECT.collidepoint(pos):
+                    self.enter_endless()
                 elif GUIDE_RECT.collidepoint(pos):
                     self.toggle_help()
                 elif EXIT_RECT.collidepoint(pos):
@@ -533,8 +652,19 @@ class GameApp:
                 self.restart()
             elif self.terminal:
                 if END_RESTART_RECT.collidepoint(pos):
-                    self.restart()
+                    if self.active_endless and self.active_endless.can_advance:
+                        self.advance_endless()
+                    else:
+                        self.restart()
                 return
+            elif self.interaction_visible and self.is_mvp and self.session.encounter and any(
+                rect.collidepoint(pos) for rect in self.active_choice_rects
+            ):
+                self.choose_encounter(1 if self.dodge_started is not None else
+                                      int(choice_rects(self.session.player_pos)[1].collidepoint(pos)))
+            elif (self.interaction_hidden and cell_at_pixel(pos) == self.session.player_pos
+                  and (self.session.trapped_cache or self.is_mvp and self.session.encounter)):
+                self.interaction_hidden = False
             elif self.pending_plan is not None and PLAN_GO_RECT.collidepoint(pos):
                 self.start_or_pause_auto_walk()
             elif self.pending_plan is not None and PLAN_CANCEL_RECT.collidepoint(pos):
@@ -548,7 +678,7 @@ class GameApp:
                 self.toggle_chisel()
             elif self.is_mvp and MEDKIT_RECT.collidepoint(pos):
                 self.use_medkit()
-            elif self.session.trapped_cache and cache_button_rect(self.session.player_pos).collidepoint(pos):
+            elif self.interaction_visible and self.session.trapped_cache and cache_button_rect(self.session.player_pos).collidepoint(pos):
                 self.open_cache()
             else:
                 index = card_at_pixel(pos)
@@ -556,7 +686,7 @@ class GameApp:
                     self.select(index)
                     return
                 cell = cell_at_pixel(pos)
-                if cell is None:
+                if cell is None or (self.is_mvp and not self.session.visible(cell)):
                     return
                 self.hovered_pos = cell
                 if self.chisel_mode:
@@ -599,6 +729,29 @@ class GameApp:
                     self.message = (tool_message(reason) if self.seal_direction is not None
                                     else placement_message(reason))
 
+    @property
+    def active_choice_rects(self):
+        if self.dodge_started is not None:
+            return (block_key_rect(self.session.player_pos),)
+        rects = choice_rects(self.session.player_pos)
+        return rects[:1] if self.session.encounter == "bell" else rects
+
+    @property
+    def interaction_visible(self):
+        return (not self.interaction_hidden and not self.in_lobby and not self.help_open and not self.terminal
+                and not self.chisel_mode and (self.session.trapped_cache or (self.is_mvp and self.session.encounter)))
+
+    @property
+    def show_event_panel(self):
+        return (self.event_panel_notice is not None and self.event_panel_notice is self.session.current_event
+                and not self.in_lobby and not self.help_open and not self.terminal
+                and not self.chisel_mode and self.session.player_pos == self.event_panel_notice.pos)
+
+    def update_dodge(self):
+        if self.dodge_started is not None and self.interaction_visible:
+            if pygame.time.get_ticks() - self.dodge_started >= BLOCK_END_MS:
+                self.choose_encounter(1, timeout=True)
+
     def draw(self, surface) -> None:
         feedback_age = 0
         if self.event_feedback is not None:
@@ -609,7 +762,11 @@ class GameApp:
             self.context_tip = None
         target = surface if surface.get_size() == WINDOW_SIZE else self.logical_surface
         if self.in_lobby:
-            self.renderer.lobby(target, self.session.seed, self.expedition_started, self.terminal)
+            resume_endless = (self.endless_run is not None and not self.endless_run.ended
+                              and self.endless_run.session.status != "LOST")
+            self.renderer.lobby(target, self.session.seed, self.expedition_started, self.terminal,
+                                show_endless=isinstance(self.expedition_session, MvpSession),
+                                resume_endless=resume_endless)
             if self.help_open:
                 self.renderer.help_overlay(target, self.help_page)
         else:
@@ -617,12 +774,36 @@ class GameApp:
                                seal_direction=self.seal_direction, chisel_mode=self.chisel_mode,
                                help_open=self.help_open, help_page=self.help_page, event_feedback=self.event_feedback,
                                feedback_age=feedback_age, pending_plan=self.pending_plan,
-                               auto_walking=self.auto_walking, nav_pause_reason=self.nav_pause_reason)
+                               auto_walking=self.auto_walking, nav_pause_reason=self.nav_pause_reason,
+                               endless=self.active_endless)
         self.renderer.language_button(target)
+        if self.difficulty_error and (self.in_lobby or self.active_endless):
+            self.renderer.context_tip(target, "Check endless_difficulty.json, then retry.")
         if isinstance(self.session, TutorialSession) and not self.in_lobby and not self.help_open:
             self.renderer.tutorial(target, self.session)
-        elif self.context_tip is not None and not self.in_lobby and not self.help_open:
+        elif (self.context_tip is not None and not self.in_lobby and not self.help_open
+              and not (self.is_mvp and self.session.encounter)):
             self.renderer.context_tip(target, self.context_tip)
+        if self.interaction_visible:
+            if self.session.trapped_cache:
+                self.renderer.cache_prompt(target, self.session)
+            else:
+                elapsed = None if self.dodge_started is None else pygame.time.get_ticks() - self.dodge_started
+                self.renderer.encounter_prompt(target, self.session, elapsed)
+        elif self.show_event_panel:
+            self.renderer.event_panel(target, self.event_panel_notice)
+        if not self.in_lobby and not self.help_open and not self.terminal:
+            hint = ("[E]" if self.session.trapped_cache else
+                    "[J]" if self.is_mvp and self.session.encounter == "bell" else
+                    "[SPACE]" if self.dodge_started is not None else
+                    "[J/K]" if self.is_mvp and self.session.encounter else None)
+            if hint:
+                cell = cell_rect(self.session.player_pos)
+                badge = self.renderer.small_font.render(hint, True, (255, 222, 134), (28, 24, 38))
+                target.blit(badge, badge.get_rect(topright=(cell.right - 4, cell.top + 4)))
+        if (self.pointer_pos is not None and self.is_mvp and not self.help_open and not self.in_lobby
+                and not self.terminal and not (isinstance(self.session, TutorialSession) and self.session.lesson == 5)):
+            self.renderer.tool_hover(target, self.session, self.pointer_pos)
         if target is not surface:
             viewport = display_viewport(surface.get_size())
             surface.fill((4, 8, 14))
@@ -637,6 +818,7 @@ class GameApp:
                 if not self.running:
                     break
             if self.running:
+                self.update_dodge()
                 self.advance_auto_walk(pygame.time.get_ticks())
                 self.draw(self.display_surface)
                 pygame.display.flip()

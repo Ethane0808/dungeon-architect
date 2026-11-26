@@ -14,6 +14,7 @@ from random import Random
 from engine.cards import Card, CardConfig, Doors, Position, draw_cards, enumerate_legal_placements
 from engine.directions import DIRECTIONS, neighbor_pos
 from engine.events import EventConfig, EventNotification
+from engine.encounters import BLOCK_START_MS, BLOCK_END_MS, PERFECT_START_MS, PERFECT_END_MS, ENTRY_MESSAGES
 from engine.game import BuildSession
 from engine.level import LevelConfig, load_level_config
 from engine.models import Board, Tile
@@ -35,12 +36,14 @@ class MvpSession(BuildSession):
 
     def __init__(self, seed: int = 42, config: CardConfig | None = None, *,
                  resources: Resources | None = None, event_config: EventConfig | None = None,
-                 level: LevelConfig | None = None, tools: ToolConfig | None = None):
+                 level: LevelConfig | None = None, tools: ToolConfig | None = None,
+                 special_weights: tuple[tuple[str, int], ...] = ()):
+        self.special_weights = special_weights
         self.level = load_level_config() if level is None else level
         self.tools = load_tool_config() if tools is None else tools
         super().__init__(seed, config, resources=resources, event_config=event_config)
         special_ids = {room.kind for room in (self.level.start, *self.level.altars, self.level.core)}
-        if (special_ids | {"rubble", "spring"}).intersection(room.kind for room in self.config.room_types):
+        if (special_ids | {"rubble", "spring", "bell"}).intersection(room.kind for room in self.config.room_types):
             raise ValueError("Ordinary card kinds cannot overlap level special-room ids")
 
     def restart(self) -> None:
@@ -53,12 +56,15 @@ class MvpSession(BuildSession):
         self.selected_index = None
         self.resources = self.initial_resources
         self.current_event = None
+        self.fog_turns = 0
         self.loops_closed = 0
         self.guard_pos: Position | None = None
+        self.guard_has_acted = False
         self.guard_next: Position | None = None
         self.guard_wake_reason: str | None = None
+        self.guard_wake_build: int | None = None
         self.activated_altars: frozenset[str] = frozenset()
-        self.tool_uses = {"door_seal": 0, "emergency_chisel": 0}
+        self.tool_uses = {"door_seal": 0, "emergency_chisel": 0, "medkit": 0}
         self.status = GameStatus.LOST if self.resources.hp_depleted else GameStatus.PLAYING
         self.loss_reason = "HP reached zero." if self.resources.hp_depleted else None
         self.objective_message = "Enter every altar, then reach the unlocked core."
@@ -72,6 +78,61 @@ class MvpSession(BuildSession):
     def core_unlocked(self) -> bool:
         return all(altar.kind in self.activated_altars for altar in self.level.altars)
 
+    def visible(self, pos):
+        r, c = self.player_pos
+        return not self.fog_turns or abs(pos[0] - r) + abs(pos[1] - c) <= 2
+
+    @property
+    def encounter(self):
+        row, col = self.player_pos
+        tile = self.board[row][col]
+        if tile and tile.special_state == "awaiting_choice" and self.status == GameStatus.PLAYING:
+            return "bell" if tile.kind == "bell" else tile.event_icon
+        return None
+
+    def choose_encounter(self, option, *, block_elapsed_ms=None):
+        kind = self.encounter
+        if kind is None or option not in (0, 1):
+            return False
+        row, col = self.player_pos
+        resources = self.resources
+        if kind == "bell":
+            if option != 0:
+                return False
+            updated = replace(resources, hp_max=resources.hp_max + 1)
+            message = "The bell rings. Maximum HP +1."
+        elif kind == "monster":
+            if option == 0 and resources.supplies <= resources.supplies_min:
+                return False
+            if option == 0:
+                updated, message = resources.apply(supplies_delta=-1), "The creature takes your ration."
+            elif block_elapsed_ms is not None and PERFECT_START_MS <= block_elapsed_ms < PERFECT_END_MS:
+                updated = resources.apply(supplies_delta=2)
+                message = "Perfect parry! Your counter defeats the creature. It drops 2 supplies."
+            elif block_elapsed_ms is not None and BLOCK_START_MS <= block_elapsed_ms < BLOCK_END_MS:
+                updated, message = resources, "You block the strike and pass unharmed."
+            else:
+                updated, message = resources.apply(hp_delta=-1), "Missed block. The creature hits you for 1 HP."
+        elif kind == "casino":
+            if option == 0:
+                updated = resources.apply(hp_delta=1)
+                message = "Hearts. The dealer pours you a healing tonic."
+            else:
+                updated = resources.apply(supplies_delta=1)
+                message = "Diamonds. The dealer hands you a travel ration."
+        else:
+            return False
+        notice = EventNotification(self.player_pos, kind, message, updated.hp - resources.hp,
+                                   updated.supplies - resources.supplies)
+        self.board[row][col] = replace(self.board[row][col], special_state=None, event_resolved=True,
+                                       event_outcome={"hp": notice.hp_delta, "supplies": notice.supplies_delta})
+        self.resources = updated
+        self.current_event = notice
+        if updated.hp_depleted:
+            self.status = GameStatus.LOST
+            self.loss_reason = "HP reached zero."
+        return True
+
     def select_card(self, index: int) -> bool:
         return self.status == GameStatus.PLAYING and super().select_card(index)
 
@@ -82,19 +143,21 @@ class MvpSession(BuildSession):
         return self.status == GameStatus.PLAYING and super().open_trapped_cache()
 
     def medkit_preview(self) -> tuple[bool, str]:
+        if self.encounter in ("monster", "casino"):
+            return False, "encounter_pending"
         if self.status != GameStatus.PLAYING:
             return False, "game_over"
         if self.resources.hp == self.resources.hp_max:
             return False, "full_health"
-        if self.resources.supplies - self.resources.supplies_min < 2:
-            return False, "insufficient_supplies"
-        return True, "ok"
+        return self.tool_budget("medkit")
 
     def use_medkit(self) -> tuple[bool, str]:
         ok, reason = self.medkit_preview()
         if ok:
-            self.resources = self.resources.apply(hp_delta=1, supplies_delta=-2)
-            self.current_event = EventNotification(self.player_pos, "medkit", "Used a medkit to recover 1 HP.", 1, -2)
+            cost = self.tools.medkit.cost_supplies
+            self.resources = self.resources.apply(hp_delta=1, supplies_delta=-cost)
+            self.tool_uses["medkit"] += 1
+            self.current_event = EventNotification(self.player_pos, "medkit", "Used a medkit to recover 1 HP.", 1, -cost)
         return ok, reason
 
     def geometry_preview(self, pos: Position) -> tuple[bool, str]:
@@ -118,6 +181,10 @@ class MvpSession(BuildSession):
         return True, "ok"
 
     def _build_preview(self, pos: Position, card: Card) -> tuple[bool, str]:
+        if self.encounter in ("monster", "casino"):
+            return False, "encounter_pending"
+        if not self.visible(pos):
+            return False, "in_fog"
         tile = Tile(card.kind, card.doors, event_category=card.event_category)
         result = can_place(tile, pos, self.board, reachable_rooms(self.board, self.player_pos))
         if result[0] and self.guard_pos is not None:
@@ -128,9 +195,11 @@ class MvpSession(BuildSession):
 
     def planning_cells(self) -> set[Position]:
         """Return globally legal previews without changing the draw guarantee."""
-        if self.status != GameStatus.PLAYING:
+        if self.status != GameStatus.PLAYING or self.encounter in ("monster", "casino"):
             return set()
         cells = super().legal_cells()
+        if self.fog_turns:
+            cells = {pos for pos in cells if self.visible(pos)}
         if cells and self.guard_pos is not None:
             cells &= frontier_cells(self.board, reachable_rooms(self.board, self.player_pos, (self.guard_pos,)))
         return cells
@@ -171,6 +240,8 @@ class MvpSession(BuildSession):
         return self.exits_sealed(board, pos), wakes
 
     def movement_preview(self, pos: Position) -> tuple[bool, str]:
+        if self.encounter in ("monster", "casino"):
+            return False, "encounter_pending"
         if self.status != GameStatus.PLAYING:
             return False, "game_over"
         if pos == self.level.core.pos and not self.core_unlocked:
@@ -237,6 +308,7 @@ class MvpSession(BuildSession):
         self.guard_wake_reason = self._alarm_trigger(self.board, self.build_turn)
         if self.guard_wake_reason is None:
             return
+        self.guard_wake_build = self.build_turn
         route = self._guard_route(self.level.start.pos)
         if len(route) > 1:
             index = max(0, len(route) - 4)
@@ -252,9 +324,11 @@ class MvpSession(BuildSession):
             return
         hit = self.guard_pos == self.player_pos
         if self.guard_next is not None:
+            self.guard_has_acted = True
             self.guard_pos = self.guard_next
             hit |= self.guard_pos in (build_source, self.player_pos)
         if hit:
+            self.guard_has_acted = True
             self.resources = self.resources.apply(hp_delta=-1)
             self.guard_pos = self.level.start.pos
             notice = self.current_event
@@ -266,12 +340,33 @@ class MvpSession(BuildSession):
         route = self._guard_route(self.guard_pos)
         self.guard_next = route[1] if len(route) > 1 else None
 
+    def _prepare_entry(self, tile: Tile, pos: Position) -> tuple[Tile, Resources, EventNotification | None]:
+        if self.special_weights and tile.event_category == "relic" and not tile.event_resolved:
+            eligible = [(name, weight) for name, weight in self.special_weights
+                        if weight > 0 and (name != "fog" or self.guard_has_acted)]
+            if not eligible:
+                return super()._prepare_entry(tile, pos)
+            names, weights = zip(*eligible)
+            kind = Random(f"special:{self.seed}:{pos}").choices(names, weights=weights, k=1)[0]
+            if kind != "relic":
+                message = ENTRY_MESSAGES[kind]
+                entered = replace(tile, event_resolved=True, event_icon=kind,
+                                  special_state=None if kind == "fog" else "awaiting_choice",
+                                  event_outcome={"hp": 0, "supplies": 0})
+                return entered, self.resources, EventNotification(pos, kind, message, 0, 0, icon=kind)
+        return super()._prepare_entry(tile, pos)
+
     def _finish_entry(self, pos: Position, previous_event, build_source: Position | None = None) -> None:
         if self.resources.hp_depleted:
             self.status = GameStatus.LOST
             self.loss_reason = "HP reached zero."
             return
         tile = self.board[pos[0]][pos[1]]
+        if self.current_event is not previous_event and self.current_event and self.current_event.category == "fog":
+            self.fog_turns = 4
+        if tile is not None and tile.kind == "bell" and not tile.event_resolved:
+            self.board[pos[0]][pos[1]] = replace(tile, special_state="awaiting_choice")
+            self.current_event = EventNotification(pos, "bell", ENTRY_MESSAGES["bell"], 0, 0)
         if tile is not None and tile.kind == "spring" and not tile.event_resolved:
             before = self.resources.hp
             self.resources = self.resources.apply(hp_delta=1)
@@ -328,6 +423,7 @@ class MvpSession(BuildSession):
         self.current_event = replace(notice, loops_closed=count, loop_supplies=self.resources.supplies - before)
 
     def _finish_build(self, pos: Position, previous: "MvpSession") -> None:
+        self.fog_turns = max(0, self.fog_turns - 1)
         self._finish_entry(pos, previous.current_event, previous.player_pos)
         if self.status != GameStatus.PLAYING:
             return
@@ -355,7 +451,9 @@ class MvpSession(BuildSession):
         self._commit(candidate)
         return True, "ok"
 
-    def _tool_budget(self, name: str) -> tuple[bool, str]:
+    def tool_budget(self, name: str) -> tuple[bool, str]:
+        if self.encounter in ("monster", "casino"):
+            return False, "encounter_pending"
         if self.status != GameStatus.PLAYING:
             return False, "game_over"
         rule = getattr(self.tools, name)
@@ -367,7 +465,7 @@ class MvpSession(BuildSession):
 
     def geometry_preview_with_seal(self, pos: Position, direction: int) -> tuple[bool, str]:
         """Validate tool budget and sealed geometry without requiring local presence."""
-        ok, reason = self._tool_budget("door_seal")
+        ok, reason = self.tool_budget("door_seal")
         if not ok:
             return False, reason
         card = self.selected_card
@@ -427,7 +525,7 @@ class MvpSession(BuildSession):
         return True, "ok"
 
     def chisel_preview(self, source: Position, target: Position) -> tuple[bool, str]:
-        ok, reason = self._tool_budget("emergency_chisel")
+        ok, reason = self.tool_budget("emergency_chisel")
         if not ok:
             return False, reason
         if self.level.core.pos in (source, target) and not self.core_unlocked:

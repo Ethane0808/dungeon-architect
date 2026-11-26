@@ -22,7 +22,7 @@ def test_demo_win_sequence_still_passes_after_route_update():
     assert session.activated_altars == {altar.kind for altar in session.level.altars}
     assert session.core_unlocked and session.player_pos == session.level.core.pos
     assert session.resources.hp == 3 and session.resources.supplies == 5
-    assert session.tool_uses == {"door_seal": 0, "emergency_chisel": 0}
+    assert session.tool_uses == {"door_seal": 0, "emergency_chisel": 0, "medkit": 0}
     for row in range(7):
         for col in range(7):
             tile = session.board[row][col]

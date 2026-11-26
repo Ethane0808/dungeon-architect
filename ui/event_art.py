@@ -2,6 +2,68 @@
 
 import pygame
 from math import cos, sin, tau
+from functools import lru_cache
+from random import Random
+
+
+@lru_cache(maxsize=1)
+def mist_texture():
+    """Tileable pixel mist, shaded in the blue-violet tones of the ruin."""
+    rng = Random("dungeon-mist-art")
+    clouds = pygame.Surface((128, 80))
+    palette = ("#191b2b", "#242737", "#2d3043", "#393d50", "#474e62", "#586477")
+    layers = []
+    for cols, rows in ((4, 6), (8, 12), (16, 24)):
+        layers.append([[rng.random() for _ in range(cols)] for _ in range(rows)])
+    for y in range(clouds.get_height()):
+        for x in range(128):
+            density = 0
+            for grid, weight in zip(layers, (.6, .28, .12)):
+                rows, cols = len(grid), len(grid[0])
+                u, v = x * cols / 128, y * rows / 80
+                i, j = int(u), int(v)
+                a, b = u-i, v-j
+                a, b = a*a*(3-2*a), b*b*(3-2*b)
+                top, bottom = grid[j], grid[(j+1) % rows]
+                k = (i+1) % cols
+                density += weight * ((1-b)*(top[i]*(1-a)+top[k]*a) + b*(bottom[i]*(1-a)+bottom[k]*a))
+            ribbon = .5 + .5*cos(tau*(y/80*3 + density + .14*sin(tau*x/128)))
+            # Restrict dithering to the transition between two flat shades.
+            tone = (density * .66 + ribbon**3 * .34) * len(palette)
+            if (x + y) % 2 == 0:
+                tone += .13
+            clouds.set_at((x, y), palette[min(int(tone), len(palette)-1)])
+    tile = pygame.transform.scale(clouds, (384, 240))
+    atlas = pygame.Surface((768, 480))
+    for x in (0, 384):
+        for y in (0, 240):
+            atlas.blit(tile, (x, y))
+    return atlas
+
+
+def portal_effect(surface, rect, now_ms, unlock_age_ms=None):
+    """Draw the open portal's glow and motes, with a burst on unlock."""
+    effect = pygame.Surface((72, 72), pygame.SRCALPHA)
+    center = pygame.Vector2(36, 36)
+    phase = now_ms / 1600 * tau
+    pulse = (1 + sin(phase)) / 2
+    pygame.draw.ellipse(effect, (74, 248, 146, round(70 + 70 * pulse)), (18, 12, 36, 46), 2)
+    for index in range(9):
+        age = (now_ms / 1450 + index / 9) % 1
+        x = 36 + sin(age * tau + index * 2.4) * (17 + index % 4 * 3)
+        y = 57 - 47 * age
+        opacity = round(230 * sin(age * tau / 2))
+        pygame.draw.circle(effect, (150, 255, 191, opacity), (x, y), 1 + index % 2)
+    if unlock_age_ms is not None and 0 <= unlock_age_ms < 950:
+        progress = unlock_age_ms / 950
+        color = (133, 255, 177, round(240 * (1 - progress)))
+        radius = 13 + progress * 20
+        pygame.draw.circle(effect, color, center, round(radius), 2)
+        for index in range(12):
+            angle = index * tau / 12
+            point = center + pygame.Vector2(cos(angle), sin(angle)) * radius
+            pygame.draw.circle(effect, color, point, 2)
+    surface.blit(effect, effect.get_rect(center=rect.center))
 
 
 def event_effect(surface, rect, notice, age_ms, sprites):
@@ -15,8 +77,8 @@ def event_effect(surface, rect, notice, age_ms, sprites):
     healing = notice.category in ("spring", "medkit")
     damage = notice.hp_delta < 0 or notice.supplies_delta < 0
     color = ((255, 114, 93) if damage else (108, 239, 211) if healing
-             else (193, 155, 255) if notice.category == "relic"
-             else (255, 218, 123) if notice.category in ("supply", "altar", "construction") or icon == "barbed-cache"
+             else (193, 155, 255) if notice.category in ("relic", "altar")
+             else (255, 218, 123) if notice.category in ("supply", "construction") or icon == "barbed-cache"
              else (145, 190, 220))
     alpha = round(250 * (1 - progress))
     radius = round(42 + 48 * progress)
@@ -79,10 +141,29 @@ def event_effect(surface, rect, notice, age_ms, sprites):
                   for i in range(4)]
         pygame.draw.polygon(effect, (*color, alpha), points, 3)
         pygame.draw.line(effect, (*color, alpha), (90, 35), (90, 125), 3)
+        if notice.category == "altar":
+            for index in range(10):
+                travel = progress * (29 + index % 4 * 8)
+                x = 90 + sin(index * 2.4 + progress * tau) * (10 + index % 3 * 5)
+                y = 97 - travel - index * 2
+                pygame.draw.polygon(effect, (229, 197, 255, alpha),
+                                    [(x, y - 4), (x + 2, y), (x, y + 4), (x - 2, y)])
         if notice.category == "relic" and "relic" in sprites:
             relic = pygame.transform.scale(sprites["relic"], (54, 54))
             relic.set_alpha(alpha)
             effect.blit(relic, relic.get_rect(center=center))
+    elif icon in ("bell", "fog", "monster", "casino", "construction"):
+        emblem = pygame.transform.scale(sprites[icon], (40, 40))
+        if icon == "bell":
+            emblem = pygame.transform.rotate(emblem, 14 * sin(progress * tau * 2))
+        elif icon == "casino":
+            emblem = pygame.transform.rotate(emblem, (1 - progress) * 24)
+        elif icon == "fog":
+            for i in range(3):
+                x = 45 + int(12 * sin(progress * tau + i))
+                pygame.draw.arc(effect, (185, 211, 237, alpha), (x, 60 + i * 15, 82, 18), 0, 3.1, 3)
+        emblem.set_alpha(alpha)
+        effect.blit(emblem, emblem.get_rect(center=(90, 90 - int(progress * 12))))
     elif notice.category == "guard":
         for offset in (-9, 9):
             pygame.draw.line(effect, (*color, alpha), (65 + offset, 65), (110 + offset, 115), 5)
@@ -160,6 +241,53 @@ def event_sprites(objects):
     pygame.draw.polygon(gem, "#866bc1", [(12, 1), (20, 9), (16, 18), (11, 22), (4, 12), (5, 7)])
     pygame.draw.polygon(gem, "#d3b6ff", [(12, 2), (14, 8), (9, 14), (6, 8)])
     pygame.draw.line(gem, "#514079", (14, 9), (11, 21), 2)
+
+    bell = canvas("bell")
+    pygame.draw.circle(bell, "#e6b660", (12, 4), 3, 2)
+    pygame.draw.circle(bell, "#ffdb90", (12, 19), 3)
+    pygame.draw.polygon(bell, "#9c6139", [(2,18),(5,14),(6,8),(10,5),(15,5),(18,9),(19,14),(22,18),(22,20),(2,20)])
+    pygame.draw.polygon(bell, "#edb85e", [(5,16),(8,13),(8,9),(11,7),(14,7),(16,11),(17,16)])
+    pygame.draw.line(bell, "#fff0b5", (10,8), (8,13), 2)
+    pygame.draw.line(bell, "#ffd88b", (3,18), (20,18), 2)
+
+    fog = canvas("fog")
+    for x, y, radius in ((6,12,4),(11,9,6),(17,12,5)):
+        pygame.draw.circle(fog, "#718da6", (x,y), radius)
+    pygame.draw.arc(fog, "#dbedf5", (6,3,12,12), .4, 2.9, 2)
+    for x, y, w in ((2,15,16),(7,18,15),(3,21,10)):
+        pygame.draw.line(fog, "#c1d9dd", (x,y), (x+w,y), 2)
+
+    beast = canvas("monster")
+    pygame.draw.polygon(beast, "#ad6470", [(1,2),(8,7),(15,7),(22,2),(20,16),(12,22),(4,17)])
+    for x in (4, 15):
+        pygame.draw.polygon(beast, "#ffe4ad", [(x,12),(x+5,13),(x+3,15)])
+    pygame.draw.polygon(beast, "#472e45", [(8,17),(16,17),(12,21)])
+    pygame.draw.line(beast, "#e5a19b", (3,5), (6,10), 2)
+
+    table = canvas("casino")
+    pygame.draw.ellipse(table, "#b38b52", (0,9,24,14))
+    pygame.draw.ellipse(table, "#23685d", (1,8,22,12))
+    pygame.draw.rect(table, "#bfa9ce", (4,3,10,14), border_radius=2)
+    pygame.draw.rect(table, "#fff0d3", (10,6,10,14), border_radius=2)
+    pygame.draw.polygon(table, "#ad475c", [(15,8),(18,12),(15,16),(12,12)])
+
+    well = canvas("spring")
+    pygame.draw.ellipse(well, "#505362", (1,8,22,14))
+    pygame.draw.ellipse(well, "#aca7a0", (1,5,22,13))
+    pygame.draw.ellipse(well, "#253f52", (4,7,16,8))
+    pygame.draw.ellipse(well, "#58bfb9", (6,9,12,5))
+    pygame.draw.line(well, "#c1f5dd", (8,10), (12,10))
+    for x in (5,13,20):
+        pygame.draw.line(well, "#333547", (x,17), (x,19))
+
+    quiet = canvas("neutral")
+    for x,y in ((2,5),(12,5)):
+        pygame.draw.polygon(quiet, "#a1b5c3", [(x,y),(x+9,y+4),(x+8,y+10),(x+3,y+7)])
+    pygame.draw.line(quiet, "#dfd3ba", (12,9), (12,17), 2)
+
+    for name, asset in (("guard", "patrol-guard"), ("construction", "chisel"), ("medkit", "health")):
+        sprite = objects[asset]
+        sprites[name] = sprite.subsurface(sprite.get_bounding_rect())
     return sprites
 
 

@@ -15,6 +15,56 @@ def translate(text: str, language: str) -> str:
 
 
 ZH_TW = {
+    "Medkit [M]": "回復包 [M]",
+    "Uses: {left}/{limit}": "剩餘 {left}/{limit} 次",
+    "{tool}  |  {cost} supplies": "{tool}　消耗 {cost} 補給",
+    "When hurt, click or press M to heal 1 HP.": "受傷時點選或按 M，恢復 1 生命。",
+    "Select a card. Cycle doors with F, then build.": "先選牌，點選或按 F 切換門口，再建造房間封住該門。",
+    "Press C, then click a room across a shared wall.": "點選或按 C，再點隔牆相鄰的已建房間，鑿通共用牆。",
+    "Green blocks. Gold counters for 2 supplies. Miss: lose 1 HP.": "綠區格擋，金區反擊並取得 2 補給。失手扣 1 生命。",
+    "[K] Start block": "[K] 準備格擋", "SPACE  |  Block": "SPACE 空白鍵　格擋",
+    "Green: block    Gold: counter": "綠區格擋　金區完美反擊",
+    "You block the strike and pass unharmed.": "格擋成功！你擋下撲擊，安全通過。",
+    "Perfect parry! Your counter defeats the creature. It drops 2 supplies.": "完美格擋！你趁勢反擊，擊敗怪物。牠掉落了 2 補給。",
+    "Missed block. The creature hits you for 1 HP.": "格擋失手，怪物的撲擊讓你失去 1 生命。",
+    "Close": "關閉",
+    "The mist hides part of this route.": "部分路線仍隱藏在霧中，請先靠近。",
+    "Ancient bell": "古鐘", "Den guardian": "巢穴怪物", "Underground casino": "地下賭場", "Mist chamber": "霧室",
+    "Ring the bell to gain 1 maximum HP.": "敲響古鐘，生命上限增加 1 點。",
+    "A creature blocks the passage. Choose how to pass.": "怪物擋住通道，請選擇如何通過。",
+    "Mist limits sight to 2 cells. Build 4 more rooms to clear it. Walking does not clear mist.": "濃霧籠罩，視野只剩兩格。再建造四間房即可散霧，走路不會減少剩餘次數。",
+    "The dealer lays out two welcome cards. Turn one over for a gift.": "荷官在桌上放了兩張迎賓牌。翻開一張，領取招待。",
+    "[J] Hearts: +1 HP": "[J] 翻紅心：生命 +1", "[K] Diamonds: +1 supply": "[K] 翻方塊：補給 +1",
+    "The bell rings. Maximum HP +1.": "古鐘響起，生命上限增加 1。",
+    "The creature takes your ration.": "怪物叼走口糧，讓出通道。",
+    "You push past the creature.": "你忍受攻擊穿過通道，失去 1 生命。",
+    "Hearts. The dealer pours you a healing tonic.": "紅心。荷官替你倒了一杯療傷藥水。",
+    "Diamonds. The dealer hands you a travel ration.": "方塊。荷官遞給你一份路上吃的乾糧。",
+    "Mist: {n} builds": "再建 {n} 房散霧",
+    "[J] Lure: 1 supply": "[J] 用 1 補給引開", "[K] Pass: lose 1 HP": "[K] 闖過，扣 1 生命",
+    "[J] Ring: +1 max HP": "[J] 敲鐘，上限 +1",
+    "Guard wakes at {limit} builds or altar link. {landmark}: {well}. Chisels: {chisel}. Seals: {seal}.":
+        "建滿 {limit} 間或接通祭壇時守衛甦醒。{landmark}：{well}。鑿壁 {chisel} 次、封門 {seal} 次。",
+    "Bell": "古鐘", "BELL": "古鐘", "Monster": "怪物", "MONSTER": "怪物",
+    "Casino": "地下賭場", "CASINO": "地下賭場", "Fog": "濃霧", "FOG": "濃霧",
+    "Guard wakes at {limit} builds or altar link. Wells: {well}. Chisels: {chisel}. Seals: {seal}.":
+        "建滿 {limit} 間或接通祭壇時守衛甦醒。古井：{well}。本層可鑿壁 {chisel} 次、封門 {seal} 次。",
+    "scattered": "隨機分布", "near Start": "靠近起點", "far from Start": "遠離起點", "none": "無",
+    "Guard woke after {count} builds ({cause}).": "守衛在已建 {count} 間房時甦醒（{cause}）。",
+    "altar linked": "接通祭壇", "build limit": "警戒已滿",
+    "Check endless_difficulty.json, then retry.": "請檢查 endless_difficulty.json，存檔後再試一次。",
+    "Press F to seal a door when building. Cost: {cost} supplies. Floor limit: {uses}.":
+        "按 F 選門，建造時封門。每次花 {cost} 補給，本層可用 {uses} 次。",
+    "Press C and click a neighboring shared wall. Cost: {cost} supplies. Floor limit: {uses}.":
+        "按 C 再點隔牆相鄰的房間。每次鑿壁花 {cost} 補給，本層可用 {uses} 次。",
+    "Endless mode [U]": "無盡模式 [U]",
+    "Resume endless [U]": "繼續無盡模式 [U]",
+    "Endless · Floor {floor}": "無盡・第 {floor} 層",
+    "Run ended": "本局已結束",
+    "Floor cleared": "樓層通過",
+    "Cleared floors: {count}  |  Run seed: {seed}": "完成樓層：{count}　｜　本局種子：{seed}",
+    "Next floor [Enter]": "前往下一層 [Enter]",
+    "X ends the run": "按 X 結束本局",
     "Scripted tutorial event": "教學固定事件",
     "Supplies gained! Connecting the altar woke the guard. Avoid its arrow and walk right to activate the altar.": "取得補給！通道接通祭壇時，守衛已甦醒。避開箭頭預告的危險格，往右走進祭壇啟動它。",
     "The guard depleted your HP. Press N to restart the tutorial.": "守衛使你的生命歸零了。按 N 重新開始教學。",
@@ -83,7 +133,7 @@ ZH_TW = {
     "The guard strikes and retreats.": "守衛擊中你，退回起點。",
     "Guard": "守衛", "GUARD": "守衛",
     "Link an altar or fill the guard alert bar to wake the guard. Each walk or build moves it along the arrow. A hit costs 1 HP and sends it back to Start.":
-        "接通祭壇或建滿 11 間房，守衛就會醒來。之後每次走路或建造，守衛都沿箭頭前進一格。被擊中會失去 1 生命，守衛退回起點。",
+        "接通祭壇或填滿警戒條，守衛就會醒來。之後每次走路或建造，守衛都沿箭頭前進一格。被擊中會失去 1 生命，守衛退回起點。",
     "Guard alert": "守衛動靜", "Guard awake": "守衛已醒",
     "Each build stirs the guard.": "每建一間，守衛就接近醒來。",
     "Full bar or altar link: awake.": "條滿或接通祭壇就會醒來。",
@@ -139,7 +189,8 @@ ZH_TW = {
     "Dead end": "盡頭房", "Straight": "直線通道", "Corner": "轉角通道",
     "T junction": "三岔路口", "Cross": "十字路口", "Start": "起點",
     "Treasure-prone": "常藏有補給", "Usually safe": "通常安全", "Balanced event": "遭遇較平均",
-    "Risk / reward": "陷阱或補給", "Relic chance": "可能出現遺物", "Unknown event": "未知事件",
+    "Risk / reward": "陷阱或補給", "Special event chance": "可能出現特殊事件", "Unknown event": "未知事件",
+    "Special": "特殊事件", "Special event": "特殊事件", "SPECIAL EVENT": "特殊事件",
     "Trap": "陷阱", "Quiet": "平靜", "Relic": "遺物", "Other": "其他",
     "Fits in some rotation": "旋轉後可放置", "No fit on this map": "目前無處可放",
     "Seal fits this rotation": "封門後可放置", "No fit with this seal": "此處封門無法放置",
@@ -268,8 +319,8 @@ ZH_TW = {
         "施工計畫會顯示藍圖、最短路線、入口與距離。G 可暫停或繼續；有計畫時 Esc 會先取消計畫，不會直接離開遊戲。",
     "If no card fits, try rotating, sealing a spare door or walking to a wall you can chisel. See Tools and loops for costs.":
         "沒有牌可放時，試著旋轉房間、封住多餘的門，或走到共用牆旁鑿出新路。工具費用請見第三頁。",
-    "Dead ends favor supplies. Straights are usually quiet. T junctions often hold danger or loot. Crossroads can hide relics.":
-        "盡頭房常有補給，直線通道通常平靜。三岔路口較容易遇到陷阱或物資，十字路口有機會發現遺物。",
+    "Straights are usually quiet. T junctions often hold danger. Dead ends and crossroads can reveal special events.":
+        "直線通道通常平靜，三岔路口容易遇到危險。盡頭房與十字路口有機會觸發特殊事件。",
     "A room reveals its event only once. Rations give 1 or 2 supplies. Darts cost 1 HP, falling stone costs 2 HP, and thorns cost 1 supply.":
         "每間房只在首次進入時觸發事件。口糧給 1 或 2 補給；飛鏢扣 1 生命，落石扣 2 生命，荊棘扣 1 補給。",
     "Press E or click Open chest to trade 1 HP for up to 2 supplies. Leave it for later if your pack is full or you have only 1 HP.":

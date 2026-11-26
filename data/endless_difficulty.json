@@ -1,0 +1,20 @@
+{
+  "events": {
+    "bell_percent": 50,
+    "special_weights": {"relic": 1, "monster": 1, "fog": 1, "casino": 1},
+    "danger_bonus_percent": 100,
+    "danger_half_bonus_floors": 5
+  },
+  "tiers": [
+    {"from_floor": 1, "guard_build_limit": 11, "variants": [{}]},
+    {"from_floor": 3, "guard_build_limit": 9, "variants": [{}]},
+    {"from_floor": 5, "guard_build_limit": 8, "variants": [
+      {"spring_position": "near_start", "rubble_count": 3},
+      {"spring_position": "far_from_start", "rubble_count": 3}
+    ]},
+    {"from_floor": 7, "guard_build_limit": 7, "variants": [
+      {"spring_position": "near_start", "rubble_count": 4, "chisel_uses": 1},
+      {"spring_position": "far_from_start", "rubble_count": 4, "seal_uses": 2}
+    ]}
+  ]
+}

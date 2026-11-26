@@ -200,6 +200,21 @@ def test_event_feedback_shows_actual_resource_icons_and_expires(app, screen, mon
     assert app.event_feedback is None
 
 
+@pytest.mark.parametrize(("category", "cache", "persistent"), [
+    ("neutral", 0, False), ("supply", 0, False), ("danger", 0, False), ("danger", 2, True),
+])
+def test_basic_events_only_open_a_dismissible_panel_for_an_interaction(app, screen, category, cache, persistent):
+    notice = EventNotification(app.session.player_pos, category, "Test event", 0, 0, trapped_cache=cache)
+    app.session.current_event = notice
+    app.capture_event_feedback(None)
+    assert app.event_feedback is notice
+    assert app.show_event_panel == persistent
+    with patch.object(app.renderer, "event_panel", wraps=app.renderer.event_panel) as panel:
+        app.draw(screen)
+    assert panel.call_count == 1
+    assert ("age_ms" in panel.call_args.kwargs) != persistent
+
+
 def test_selection_rotation_and_rendering_preserve_hand_and_board(app, screen):
     session = app.session
     before = deepcopy(session.board), session.draw_result, session.rng.getstate()
@@ -548,8 +563,8 @@ def test_hud_shows_resources_event_message_and_actual_deltas(app, screen):
         app.draw(screen)
     labels = [call.args[1] for call in texts.call_args_list]
     assert "HP" in labels and "4/5" in labels and "SUPPLIES" in labels and "2/5" in labels
-    assert "A dart slips through a cracked mural." in labels and "HP -1" in labels
-    assert any(label.startswith("LAST EVENT: Danger at ") for label in labels)
+    assert "A dart slips through a cracked mural." in labels and "-1 HP" in labels
+    assert not any(label.startswith("LAST EVENT:") for label in labels)
     key(app, pygame.K_n)
     with patch.object(app.renderer, "text", wraps=app.renderer.text) as texts:
         app.draw(screen)
@@ -574,7 +589,7 @@ def test_zero_hp_hud_and_capped_rewards_render_safely(app, screen):
         app.draw(screen)
     labels = [call.args[1] for call in texts.call_args_list]
     assert "Supplies +1" not in labels
-    assert any(label.startswith("No resource change") for label in labels)
+    assert "Supplies full" in labels
 
 
 @pytest.mark.parametrize("supplies", [2, 5])
@@ -617,6 +632,7 @@ def test_supply_chest_opens_once_and_restart_clears_animation(app, screen, monke
     ("danger", "dart"), ("danger", "falling-stone"), ("danger", "thorn"),
     ("danger", "barbed-cache"), ("supply", "supply"), ("relic", "relic"),
     ("spring", ""), ("medkit", ""), ("altar", ""), ("guard", ""),
+    ("bell", ""), ("monster", ""), ("fog", ""), ("casino", ""), ("construction", ""),
 ])
 def test_event_effects_animate_then_expire_without_changing_event(app, category, icon):
     notice = EventNotification((3, 3), category, "Event", 0, 0, icon=icon)

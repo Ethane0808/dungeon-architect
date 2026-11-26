@@ -70,11 +70,11 @@ def test_default_config_loads_existing_provisional_settings(config):
     assert set(rooms) == {"dead_end", "straight", "corner", "t_junction", "cross"}
     assert rooms["straight"].weight == 3
     assert {kind: dict(room.event_weights) for kind, room in rooms.items()} == {
-        "dead_end": {"danger": 4, "neutral": 2, "relic": 0, "supply": 14},
+        "dead_end": {"danger": 2, "neutral": 2, "relic": 8, "supply": 8},
         "straight": {"danger": 3, "neutral": 15, "relic": 0, "supply": 2},
         "corner": {"danger": 6, "neutral": 8, "relic": 0, "supply": 6},
-        "t_junction": {"danger": 11, "neutral": 2, "relic": 0, "supply": 7},
-        "cross": {"danger": 9, "neutral": 2, "relic": 6, "supply": 3},
+        "t_junction": {"danger": 13, "neutral": 2, "relic": 0, "supply": 5},
+        "cross": {"danger": 10, "neutral": 2, "relic": 5, "supply": 3},
     }
     assert config.boost_second_legal_weight == 2
 

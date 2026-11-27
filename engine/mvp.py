@@ -318,7 +318,7 @@ class MvpSession(BuildSession):
             self.guard_pos = next(connected_neighbors(self.board, self.player_pos), self.player_pos)
             self.guard_next = self.player_pos if self.guard_pos != self.player_pos else None
 
-    def _update_guard(self, previous_event, build_source: Position | None) -> None:
+    def _update_guard(self, previous_event) -> None:
         if self.guard_pos is None:
             self._wake_guard()
             return
@@ -326,7 +326,7 @@ class MvpSession(BuildSession):
         if self.guard_next is not None:
             self.guard_has_acted = True
             self.guard_pos = self.guard_next
-            hit |= self.guard_pos in (build_source, self.player_pos)
+            hit |= self.guard_pos == self.player_pos
         if hit:
             self.guard_has_acted = True
             self.resources = self.resources.apply(hp_delta=-1)
@@ -356,7 +356,7 @@ class MvpSession(BuildSession):
                 return entered, self.resources, EventNotification(pos, kind, message, 0, 0, icon=kind)
         return super()._prepare_entry(tile, pos)
 
-    def _finish_entry(self, pos: Position, previous_event, build_source: Position | None = None) -> None:
+    def _finish_entry(self, pos: Position, previous_event) -> None:
         if self.resources.hp_depleted:
             self.status = GameStatus.LOST
             self.loss_reason = "HP reached zero."
@@ -394,7 +394,7 @@ class MvpSession(BuildSession):
                 assert core is not None
                 self.board[core_pos[0]][core_pos[1]] = replace(core, special_state="unlocked")
                 self.objective_message = Message("{message} Core unlocked!", message=self.objective_message)
-        self._update_guard(previous_event, build_source)
+        self._update_guard(previous_event)
         if self.resources.hp_depleted:
             self.status = GameStatus.LOST
             self.loss_reason = "HP reached zero."
@@ -424,7 +424,7 @@ class MvpSession(BuildSession):
 
     def _finish_build(self, pos: Position, previous: "MvpSession") -> None:
         self.fog_turns = max(0, self.fog_turns - 1)
-        self._finish_entry(pos, previous.current_event, previous.player_pos)
+        self._finish_entry(pos, previous.current_event)
         if self.status != GameStatus.PLAYING:
             return
         tile = self.board[pos[0]][pos[1]]

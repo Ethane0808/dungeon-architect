@@ -38,7 +38,8 @@
       "supply": {
         "supplies_delta": 1, "message": "Dry rations hang above the flood line.",
         "variants": [
-          { "supplies_delta": 2, "message": "Two waxed packs survived the flood." }
+          { "supplies_delta": 2, "message": "Two waxed packs survived the flood." },
+          { "hp_delta": 1, "weight": 1, "icon": "herb", "message": "You find healing herbs and dress your wounds." }
         ]
       },
       "danger": {
@@ -46,7 +47,7 @@
         "variants": [
           { "hp_delta": -2, "weight": 1, "icon": "falling-stone", "message": "A lintel gives way above your head." },
           { "supplies_delta": -1, "weight": 3, "icon": "thorn", "message": "Thorn vines snag your pack." },
-          { "trapped_cache": 2, "weight": 4, "icon": "barbed-cache", "message": "Barbed wire binds a ration chest." }
+          { "trapped_cache": 2, "weight": 3, "icon": "barbed-cache", "message": "Barbed wire binds a ration chest." }
         ]
       },
       "neutral": {

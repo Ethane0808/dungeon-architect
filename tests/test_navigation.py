@@ -64,6 +64,17 @@ def test_build_entries_require_door_to_door_and_reachable_room():
     assert build_entries(board, (-1, 3), ALL, {(2, 3)}) == ()
 
 
+def test_remote_build_entrance_across_portal_requires_broken_seal():
+    board = make_empty_board()
+    start, core, entrance, target = ((3, c) for c in range(1, 5))
+    for row, col in (start, entrance):
+        board[row][col] = Tile("straight", HORIZONTAL)
+    board[3][2] = Tile("core", HORIZONTAL, special_state="locked")
+    assert route_to_build_site(board, start, target, HORIZONTAL) is None
+    board[3][2] = Tile("core", HORIZONTAL, special_state="unlocked")
+    assert route_to_build_site(board, start, target, HORIZONTAL).path == (start, core, entrance)
+
+
 def test_rotated_or_sealed_doors_change_valid_build_entry():
     board = make_empty_board()
     board[3][2] = Tile("west", HORIZONTAL)

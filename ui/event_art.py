@@ -6,6 +6,86 @@ from functools import lru_cache
 from random import Random
 
 
+def vine_spires_art(source, cell_size):
+    """Set the spires into the existing floor, leaving the surrounding paving visible."""
+    art = source.subsurface(source.get_bounding_rect(min_alpha=64)).copy()
+    for y in range(art.get_height()):
+        for x in range(art.get_width()):
+            r, g, b, alpha = art.get_at((x, y))
+            if not alpha:
+                continue
+            light = (3 * r + 6 * g + b) // 10
+            if g > b and r > b:  # Olive vines, from shaded stems to sage-green tips.
+                color = (14 + light * 49 // 100, 27 + light * 58 // 100, 22 + light * 35 // 100)
+            else:  # Blue slate, in the same value range as the nearby stone passages.
+                color = (13 + light * 62 // 100, 19 + light * 67 // 100, 26 + light * 70 // 100)
+            art.set_at((x, y), (*color, alpha))
+
+    tile = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+    footprint = tile.get_rect().inflate(-20, -20)
+    stone = art.get_rect().fit(footprint)
+    stone.center = (tile.get_width() // 2, tile.get_height() // 2 + 2)
+    for inset, opacity in ((0, 45), (3, 76), (6, 108)):
+        shadow = pygame.Rect(stone.left - 2, stone.bottom - 13, stone.width + 5, 12)
+        pygame.draw.ellipse(tile, (11, 17, 22, opacity), shadow.inflate(-2 * inset, -inset))
+    tile.blit(pygame.transform.scale(art, stone.size), stone)
+    return tile
+
+
+def traveler_art(explorer):
+    """Dress the original explorer in a travel cloak, preserving its pose and anchor."""
+    cloak = explorer.copy()
+    for y in range(cloak.get_height()):
+        for x in range(cloak.get_width()):
+            r, g, b, alpha = explorer.get_at((x, y))
+            if not alpha:
+                continue
+            if r > g > b:  # Ochre fabric becomes teal, retaining the painted folds.
+                cloak.set_at((x, y), (r * 2 // 5, g * 9 // 10, g, alpha))
+            elif y < 11 and b > r and r > 65:  # Warm linen hood.
+                cloak.set_at((x, y), (g, g * 4 // 5, r * 3 // 5, alpha))
+
+    # The satchel and hanging lantern follow the shoulders and hand of the 20x25 sprite.
+    pygame.draw.line(cloak, "#9e754a", (14, 8), (6, 16))
+    pygame.draw.rect(cloak, "#654838", (5, 15, 5, 4), border_radius=1)
+    pygame.draw.line(cloak, "#c79b62", (5, 16), (9, 16))
+    pygame.draw.lines(cloak, "#b48b55", False, [(1, 15), (2, 13), (3, 13), (4, 15)])
+    pygame.draw.rect(cloak, "#654838", (0, 15, 6, 6), border_radius=1)
+    pygame.draw.rect(cloak, "#ffc460", (1, 16, 4, 3))
+    cloak.set_at((2, 17), "#fff1a3")
+    pygame.draw.line(cloak, "#c29253", (1, 19), (4, 19))
+
+    frames = []
+    lights = []
+    for phase in range(24):
+        angle = phase * tau / 24
+        wave = .75 * sin(angle) + .25 * sin(3 * angle + .5)
+        frame = cloak.copy()
+        frame.set_at((3, 17), "#fff1a3" if wave > 0 else "#ffbf5a")
+        frame.set_at((2, 16), "#fff6c7" if wave > .35 else "#ffd17b")
+        # Cast light onto the pavement separately so the traveler keeps its native bounds.
+        light = pygame.Surface((64, 60), pygame.SRCALPHA)
+        lamp_x, lamp_y = (light.get_width() - cloak.get_width()) // 2 + 3, 35
+        for radius in range(22, 0, -1):
+            strength = (1 - radius / 23) ** 1.6
+            pygame.draw.circle(light, (255, 182, 82, round((145 + 20 * wave) * strength)),
+                               (lamp_x, lamp_y), radius)
+        pool = pygame.Surface((56, 18), pygame.SRCALPHA)
+        for inset in range(8):
+            pygame.draw.ellipse(pool, (255, 181, 82, round((5 + 5 * inset) * (1 + .15 * wave))),
+                                pool.get_rect().inflate(-4 * inset, -2 * inset))
+        light.blit(pool, (0, 40))
+        for offset, drift in ((0, -1), (11, 1)):
+            age = (phase + offset) % 24
+            opacity = round(175 * sin(age * tau / 48))
+            x = lamp_x - 3 + round(drift * age / 6 + 1.5 * sin(age / 4))
+            pygame.draw.line(light, (255, 207, 117, opacity), (x, lamp_y - 3 - age),
+                             (x, lamp_y - 2 - age))
+        frames.append(frame)
+        lights.append(light)
+    return cloak, tuple(frames), tuple(lights)
+
+
 @lru_cache(maxsize=1)
 def mist_texture():
     """Tileable pixel mist, shaded in the blue-violet tones of the ruin."""
@@ -74,7 +154,7 @@ def event_effect(surface, rect, notice, age_ms, sprites):
     effect = pygame.Surface((180, 180), pygame.SRCALPHA)
     center = pygame.Vector2(90, 90)
     icon = notice.icon or notice.category
-    healing = notice.category in ("spring", "medkit")
+    healing = notice.category in ("spring", "medkit") or icon == "herb"
     damage = notice.hp_delta < 0 or notice.supplies_delta < 0
     color = ((255, 114, 93) if damage else (108, 239, 211) if healing
              else (193, 155, 255) if notice.category in ("relic", "altar")
@@ -124,6 +204,10 @@ def event_effect(surface, rect, notice, age_ms, sprites):
             cache = pygame.transform.scale(sprites[icon], (54, 54))
             cache.set_alpha(alpha)
             effect.blit(cache, cache.get_rect(center=center))
+    elif icon == "herb":
+        sprig = pygame.transform.scale(sprites[icon], (50, 50))
+        sprig.set_alpha(alpha)
+        effect.blit(sprig, sprig.get_rect(center=(90, 94 - round(progress * 18))))
     elif notice.category == "supply":
         chest = pygame.transform.scale(sprites["supply"], (54, 54))
         chest.set_alpha(alpha)
@@ -178,14 +262,18 @@ def chest_frames():
         pygame.draw.rect(sprite, "#382a30", (2, 12, 20, 10))
         pygame.draw.rect(sprite, "#a57940", (3, 13, 18, 8))
         pygame.draw.rect(sprite, "#e5bc68", (3, 13, 18, 8), 1)
+        pygame.draw.line(sprite, "#795337", (4, 18), (19, 18))
         pygame.draw.rect(sprite, "#211d29", (4, 12, 16, 4))
         lid = pygame.Rect(3, 11 - lift, 18, 6)
         pygame.draw.rect(sprite, "#a57940", lid)
         pygame.draw.rect(sprite, "#f5cf7a", lid, 1)
+        pygame.draw.line(sprite, "#bc9255", (4, lid.top + 2), (19, lid.top + 2))
         for x in (6, 16):
             pygame.draw.line(sprite, "#e5bc68", (x, lid.top), (x, lid.bottom - 1))
             pygame.draw.line(sprite, "#e5bc68", (x, 17), (x, 20))
+            sprite.set_at((x, 20), "#ffe0a2")
         pygame.draw.rect(sprite, "#f5cf7a", (10, lid.bottom - 2, 4, 3))
+        sprite.set_at((12, lid.bottom - 1), "#694534")
         frames.append(sprite)
     frames[-1].fill((160, 160, 175, 255), special_flags=pygame.BLEND_RGBA_MULT)
     return tuple(frames)
@@ -237,6 +325,12 @@ def event_sprites(objects):
         pygame.draw.line(cache, silver, a, b)
     pygame.draw.line(cache, silver, (15, 12), (19, 14), 2)
 
+    herb = canvas("herb")
+    pygame.draw.polygon(herb, "#73b98b", [(3, 6), (11, 9), (13, 16), (6, 14)])
+    pygame.draw.polygon(herb, "#b3de94", [(12, 12), (14, 5), (22, 2), (20, 9)])
+    pygame.draw.lines(herb, "#478069", False, [(7, 22), (12, 15), (15, 10), (19, 6)], 2)
+    pygame.draw.line(herb, "#ebcf87", (7, 16), (13, 20), 2)
+
     gem = canvas("relic")
     pygame.draw.polygon(gem, "#866bc1", [(12, 1), (20, 9), (16, 18), (11, 22), (4, 12), (5, 7)])
     pygame.draw.polygon(gem, "#d3b6ff", [(12, 2), (14, 8), (9, 14), (6, 8)])
@@ -263,6 +357,10 @@ def event_sprites(objects):
         pygame.draw.polygon(beast, "#ffe4ad", [(x,12),(x+5,13),(x+3,15)])
     pygame.draw.polygon(beast, "#472e45", [(8,17),(16,17),(12,21)])
     pygame.draw.line(beast, "#e5a19b", (3,5), (6,10), 2)
+    pygame.draw.polygon(beast, "#73495c", [(20, 6), (17, 10), (13, 11), (14, 16), (19, 15)])
+    pygame.draw.line(beast, "#ffe4ad", (15, 13), (18, 12))
+    for x in (8, 15):
+        pygame.draw.line(beast, "#dec6aa", (x, 17), (x, 19))
 
     table = canvas("casino")
     pygame.draw.ellipse(table, "#b38b52", (0,9,24,14))

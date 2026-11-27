@@ -15,6 +15,11 @@ def translate(text: str, language: str) -> str:
 
 
 ZH_TW = {
+    "Healing herbs": "療傷草藥",
+    "You find healing herbs and dress your wounds.": "你找到療傷草藥，用它敷了傷口。",
+    "After build": "建造後",
+    "Sealed portal. Visit every altar before entering.": "傳送門仍被封印。先走進每座祭壇，再回來進入核心。",
+    "Portal sealed: build around it to reach the altars.": "此門接向封印核心，目前無法穿過。請繞路建往祭壇。",
     "Medkit [M]": "回復包 [M]",
     "Uses: {left}/{limit}": "剩餘 {left}/{limit} 次",
     "{tool}  |  {cost} supplies": "{tool}　消耗 {cost} 補給",
@@ -128,7 +133,7 @@ ZH_TW = {
     "Medkit [M] or free well {cell}": "回復包 [M] 或到古井 {cell} 回血",
     "Moved to {cell}.": "已移動到 {cell}。",
     "Guard moves on walk / build": "移動或建造，守衛前進一格",
-    "Walk now! Building costs 1 HP": "先移動！在此建造會失去 1 生命",
+    "Guard targets your room": "守衛正逼近你所在的房間",
     "{message} Guard hit!": "{message} 守衛擊中你！",
     "The guard strikes and retreats.": "守衛擊中你，退回起點。",
     "Guard": "守衛", "GUARD": "守衛",
@@ -321,8 +326,8 @@ ZH_TW = {
         "沒有牌可放時，試著旋轉房間、封住多餘的門，或走到共用牆旁鑿出新路。工具費用請見第三頁。",
     "Straights are usually quiet. T junctions often hold danger. Dead ends and crossroads can reveal special events.":
         "直線通道通常平靜，三岔路口容易遇到危險。盡頭房與十字路口有機會觸發特殊事件。",
-    "A room reveals its event only once. Rations give 1 or 2 supplies. Darts cost 1 HP, falling stone costs 2 HP, and thorns cost 1 supply.":
-        "每間房只在首次進入時觸發事件。口糧給 1 或 2 補給；飛鏢扣 1 生命，落石扣 2 生命，荊棘扣 1 補給。",
+    "A room reveals its event only once. Rations give 1 or 2 supplies. Healing herbs restore 1 HP. Darts cost 1 HP, falling stone costs 2 HP, and thorns cost 1 supply.":
+        "每間房只在首次進入時觸發事件。口糧給 1 或 2 補給，療傷草藥回復 1 生命；飛鏢扣 1 生命，落石扣 2 生命，荊棘扣 1 補給。",
     "Press E or click Open chest to trade 1 HP for up to 2 supplies. Leave it for later if your pack is full or you have only 1 HP.":
         "按 E 或點「開啟寶箱」，花 1 生命換最多 2 補給。背包已滿或只剩 1 生命時，可先離開再回來。",
     "Walk into both altars in either order. The first gives 1 supply. Enter the unlocked core to win. Reaching zero HP ends the expedition.":

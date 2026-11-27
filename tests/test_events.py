@@ -65,6 +65,19 @@ def test_relic_event_restores_both_resources_with_limits():
     assert session.board[pos[0]][pos[1]].event_outcome == {"hp": 1, "supplies": 1}
 
 
+@pytest.mark.parametrize(("hp", "supplies", "deltas"), [(3, 2, (1, 0)), (5, 2, (0, 0)), (3, 5, (1, 0)), (5, 5, (0, 0))])
+def test_herbs_heal_once_without_changing_supplies(hp, supplies, deltas):
+    config = load_event_config()
+    herb, = (v for v in dict(config.variants)["supply"] if v.icon == "herb")
+    fixed = EventConfig((("supply", herb),))
+    game = category_session("supply", resources=Resources(hp, 5, supplies, 5), event_config=fixed)
+    pos = build(game)
+    assert game.current_event.icon == "herb"
+    assert (game.current_event.hp_delta, game.current_event.supplies_delta) == deltas
+    assert game.move(START_POS)[0] and game.move(pos)[0]
+    assert (game.resources.hp, game.resources.supplies) == (hp + deltas[0], supplies + deltas[1])
+
+
 def test_preview_and_rotation_hide_outcomes_and_do_not_change_resources():
     session = category_session("danger")
     before = deepcopy(session.board), session.resources, session.current_event, session.rng.getstate()

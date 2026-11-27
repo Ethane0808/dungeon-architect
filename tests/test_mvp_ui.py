@@ -12,10 +12,11 @@ import pytest
 from engine.cards import Card, load_card_config
 from engine.demo import DEFAULT_DEMO_PATH
 from engine.endless import EndlessRun
-from engine.level import LevelConfig, SpecialRoom
+from engine.level import LevelConfig, SpecialRoom, load_level_config
 from engine.models import Tile
 from engine.mvp import GameStatus, MvpSession
 from engine.resources import Resources
+from tests.test_mvp import cross_config
 from ui.app import GameApp, NAV_STEP_MS
 from ui.locales import ZH_TW, translate
 from ui.screens import (BOARD_RECT, cache_button_rect, cache_prompt_rect, CARD_RECTS, CHISEL_RECT, END_RESTART_RECT, SEAL_RECT,
@@ -100,6 +101,28 @@ def test_remote_click_sets_plan_without_building_or_consuming_rng(screen):
     assert app.pending_plan.target == target and app.pending_plan.entry == (3, 1)
     assert app.pending_plan.path == ((3, 0), (3, 1))
     assert state(app.session) == before
+
+
+def test_build_position_preview_matches_real_guard_follow_step(screen):
+    level = replace(load_level_config(), guard_build_limit=1, rubble_count=0, spring_count=0)
+    game = MvpSession(42, cross_config(), level=level)
+    app = GameApp(game)
+    key(app, pygame.K_1)
+    click(app, cell_rect((3, 1)).center)
+    key(app, pygame.K_1)
+    landing = (3, 2)
+    app.hovered_pos = landing
+    before = state(game)
+    with patch.object(app.renderer, "build_position_preview", wraps=app.renderer.build_position_preview) as preview:
+        app.draw(screen)
+        _, player, guard = preview.call_args.args
+        assert (player, guard) == (landing, game.player_pos)
+        app.hovered_pos = game.level.core.pos
+        app.draw(screen)
+        assert preview.call_count == 1
+    assert state(game) == before
+    click(app, cell_rect(landing).center)
+    assert (game.player_pos, game.guard_pos) == (player, guard)
 
 
 def test_auto_walk_calls_mvp_move_once_per_tick_and_arrival_needs_confirmation(screen):
@@ -596,6 +619,19 @@ def test_locked_core_is_a_full_independent_room_and_differs_from_unlocked_core(a
     red, green, blue, _ = unlocked.get_at((22, 22))
     assert green > red and green > blue and green > 200
     assert pygame.image.tobytes(locked, "RGBA") != pygame.image.tobytes(unlocked, "RGBA")
+
+
+def test_build_preview_warns_before_connecting_to_sealed_portal(screen):
+    level = replace(MvpSession().level, rubble_count=0, spring_count=0,
+                    core=SpecialRoom("core", (3, 2), (False, True, False, True)))
+    game = MvpSession(42, cross_config(), level=level)
+    app = GameApp(game)
+    key(app, pygame.K_1)
+    app.hovered_pos = (3, 1)
+    assert game.preview(app.hovered_pos)[0]
+    assert any("Portal sealed" in line for line in labels(app, screen))
+    assert game.place(app.hovered_pos)[0]
+    assert game.move(level.core.pos) == (False, "room_locked")
 
 
 def test_objective_checklist_updates_on_real_entry_and_shows_victory(screen):

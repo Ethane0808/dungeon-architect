@@ -177,7 +177,7 @@ def win_compact(game, order=((2, 2), (4, 2))):
 
 
 @pytest.mark.parametrize("build_under_threat", [False, True])
-def test_guard_advances_on_walk_and_catches_build_under_threat(build_under_threat):
+def test_guard_advances_into_vacated_room_without_hitting_player(build_under_threat):
     level = compact_level()
     altar, other = level.altars
     level = replace(level, altars=(replace(altar, doors=(False, False, True, True)), other))
@@ -186,17 +186,33 @@ def test_guard_advances_on_walk_and_catches_build_under_threat(build_under_threa
     assert game.guard_wake_reason == "altar" and not game.activated_altars
     assert game.guard_pos == (3, 0) and game.guard_next == (3, 1)
     assert game.move((2, 2))[0]
-    # Put the guard one step behind the player. Building counts the old room as
-    # the construction source, while ordinary walking only checks the destination.
-    game.guard_pos, game.guard_next = (3, 1), (2, 2)
+    game.guard_pos, game.guard_next = (3, 2), (2, 2)
     hp = game.resources.hp
     if build_under_threat:
         assert game.select_card(0) and game.place((2, 1))[0]
-        assert game.guard_pos == (3, 0)
     else:
-        assert game.move((3, 2))[0]
-        assert game.guard_pos == (2, 2)
-    assert game.resources.hp == hp - int(build_under_threat)
+        # Give the player a connected room distinct from the guard's room.
+        game.board[2][1] = Tile("cross", (True,) * 4, event_resolved=True)
+        assert game.move((2, 1))[0]
+    assert game.guard_pos == (2, 2) and game.guard_next == game.player_pos
+    assert game.resources.hp == hp
+
+
+@pytest.mark.parametrize("sealed", [False, True])
+def test_build_one_room_ahead_of_guard_then_walk_back_into_it(sealed):
+    level = replace(load_level_config(), guard_build_limit=1, rubble_count=0, spring_count=0)
+    game = MvpSession(42, cross_config(), level=level)
+    assert game.select_card(0) and game.place((3, 1))[0]
+    assert game.guard_pos == (3, 0) and game.guard_next == game.player_pos
+    hp = game.resources.hp
+    assert game.select_card(0)
+    # A northern spur leaves room for the seal without changing the entrance.
+    result = game.place_with_seal((2, 1), 0) if sealed else game.place((2, 1))
+    assert result == (True, "ok")
+    assert game.player_pos == (2, 1) and game.guard_pos == (3, 1)
+    assert game.guard_next == game.player_pos and game.resources.hp == hp
+    assert game.move((3, 1))[0]
+    assert game.resources.hp == hp - 1 and game.guard_pos == game.level.start.pos
 
 
 def test_default_game_starts_with_visible_reserved_objectives_and_protected_hand():
@@ -534,7 +550,8 @@ def test_blocked_construction_can_recover_with_chisel_and_protected_new_hand(gam
     assert game.status == GameStatus.PLAYING and not game.blocked
     assert len(game.draw_result.cards) == 3 and game.draw_result.legal_card_indices
     assert game.resources.supplies == 0 and not game.board[2][1].event_resolved
-    assert game.move((2, 1))[0] and game.resources.supplies == 2
+    assert game.move((2, 1))[0] and game.resources.supplies == 0
+    assert game.board[2][1].event_resolved and game.current_event.icon == "herb"
 
 
 def test_blocked_without_affordable_tools_still_allows_free_walking(game):
